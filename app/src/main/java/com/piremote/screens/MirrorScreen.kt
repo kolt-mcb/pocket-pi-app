@@ -157,7 +157,10 @@ fun MirrorSurface(
     }
     // Stick to the bottom as new frames arrive (and on the first frame after
     // connect): scrollToItem(last) clamps to the end, leaving the latest line at
-    // the viewport bottom.
+    // the viewport bottom. Keyed on frame.seq (not line content): a frame that
+    // arrives mid-fling bails on isScrollInProgress, and seq keeps ticking so
+    // the very next frame retries — a content key would drop the scroll until
+    // the buffer happened to change again.
     LaunchedEffect(frame.seq) {
         if (followBottom && frame.lines.isNotEmpty() && !listState.isScrollInProgress) {
             listState.scrollToItem(frame.lines.size - 1)
@@ -222,6 +225,9 @@ fun MirrorSurface(
             // Per-line memoization: parsing only runs for a row whose raw text
             // changed; a row carrying an inline image (kitty/OSC 1337) renders as
             // an image, the rest is text.
+            // Keyed by index, not line content: the buffer is padded with blank
+            // rows (MirrorDiff), so content keys are not unique and LazyColumn
+            // throws on duplicates. Row identity is positional here anyway.
             items(frame.lines.size, key = { it }) { idx ->
                 val raw = frame.lines[idx]
                 val item = remember(raw) { parseMirrorLine(raw) }
