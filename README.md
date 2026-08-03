@@ -7,9 +7,15 @@ extension: the extension mirrors pi's live terminal UI over a LAN WebSocket,
 and this app renders it and sends your input back. No cloud, no accounts, no
 telemetry — the phone talks straight to your machine over pinned TLS.
 
-<!-- screenshots: drop 3-4 into docs/screenshots/ and link them here.
-     Suggested set: phone mirror mid-stream, inline image in the mirror,
-     tablet layout with two sessions, connect screen with QR scanner. -->
+<p align="center">
+  <img src="docs/screenshots/mirror-demo.gif" width="360"
+       alt="Live pi session mirrored on a phone: streaming agent output, session tabs, terminal keyboard">
+</p>
+
+*A live pi session mirrored to the phone ([full-res video](docs/screenshots/mirror-demo.mp4)).*
+
+<!-- more screenshots welcome in docs/screenshots/: inline image in the
+     mirror, tablet layout, connect screen with QR scanner. -->
 
 ## Features
 
