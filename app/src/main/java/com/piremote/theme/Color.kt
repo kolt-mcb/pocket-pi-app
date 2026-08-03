@@ -56,5 +56,5 @@ val thinkingHigh: Color get() = ThemeManager.current.thinkingHigh
 val footerBg: Color get() = ThemeManager.current.footerBg
 val footerText: Color get() = ThemeManager.current.footerText
 
-// ▸ Legacy alias (used by a few places)
+// ▸ Alias (used by a few places)
 val errorColor: Color get() = error

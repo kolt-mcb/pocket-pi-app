@@ -13,11 +13,10 @@ plugins {
 // Outside a git checkout (e.g. some IDE sync edge cases) we fall back to
 // versionCode=1 / versionName="0.1.0".
 //
-// VERSION_CODE_OFFSET: this repo was split out of kolt-mcb/pi-remote-control,
-// where the rolling `latest` build had already reached versionCode 89. The split
-// reset the commit count, so we add an offset to stay strictly above 89 and keep
-// the updater monotonic. The CI workflow (build-apk.yml) applies the SAME offset
-// when it stamps the artifact name / release body — keep the two in sync.
+// VERSION_CODE_OFFSET keeps versionCode strictly above every previously
+// published build so the in-app updater stays monotonic. The CI workflow
+// (build-apk.yml) applies the SAME offset when it stamps the artifact name /
+// release body — keep the two in sync.
 val gitVersionCode: Int = providers.exec {
     commandLine("git", "rev-list", "--count", "HEAD")
 }.standardOutput.asText.map { it.trim().toIntOrNull() ?: 1 }.getOrElse(1)
@@ -98,9 +97,7 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-    // setContent + BackHandler (androidx.activity.compose.*). Previously pulled
-    // in transitively via navigation-compose; declared explicitly now that the
-    // unused navigation-compose dependency is gone.
+    // setContent + BackHandler (androidx.activity.compose.*)
     implementation("androidx.activity:activity-compose:1.9.3")
 
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")

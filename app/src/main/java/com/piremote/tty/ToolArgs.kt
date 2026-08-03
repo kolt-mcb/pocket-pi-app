@@ -4,8 +4,7 @@ import com.piremote.JP
 import com.piremote.Js
 
 /**
- * Shared parsers for pi tool-call argument JSON. Single home for logic that
- * was previously duplicated between Screens.kt and AnsiMessageRenderer.kt.
+ * Shared parsers for pi tool-call argument JSON.
  */
 
 /**

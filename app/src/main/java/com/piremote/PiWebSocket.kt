@@ -506,12 +506,11 @@ class PiWebSocket : WebSocketListener() {
         historyApplied = false
         // Capability handshake — FIRST message so it can cancel the host's
         // deferred history replay. This app is mirror-only (it renders the screen
-        // mirror, not the message-list scrollback), so the host skips shipping the
-        // full conversation history, which was the bulk of connect latency on a
-        // slow link. Old hosts ignore the unknown type and still send history.
+        // mirror, not a message-list scrollback), so the host skips shipping the
+        // full conversation history — the bulk of connect latency on a slow
+        // link. Hosts that don't know the type ignore it and send history.
         sock?.send("{\"type\":\"client_hello\",\"mirrorOnly\":true,\"diff\":true,\"deflate\":true,\"mirrorImages\":true}")
-        // Request the session list on connect. We no longer ask for the slash
-        // command list: nothing has rendered it since the screen mirror landed —
+        // Request the session list on connect. No command list is requested:
         // typing "/" shows pi's own command menu in the mirrored frame.
         sock?.send("{\"type\":\"get_sessions\"}")
         // Flush the device width now that the socket is open (it's usually known
@@ -741,8 +740,7 @@ class PiWebSocket : WebSocketListener() {
             // A file pushed from the host for the user to save/share
             "file" -> {
                 val data = Js.gets(j, "data") ?: ""
-                // Previous cap was ~6 MB decoded / 8 MB base64 from PROTOCOL.md image limit.
-                // No longer enforced — device RAM / process limits dominate over the cap.
+                // No size cap — device RAM / process limits dominate anyway.
                 if (data.isNotEmpty()) {
                     // agentId is stamped by the host (or peer-forward) so the user
                     // sees which agent sent it. Resolve to a display name.
@@ -841,7 +839,7 @@ class PiWebSocket : WebSocketListener() {
         val role = Js.gets(mm, "role") ?: return
         // pi normalizes message.content into an array of typed blocks
         // ([{type:"text",text:"hi"}, {type:"image",...}, ...]); plain-string
-        // content also appears for some legacy paths. extractText handles both.
+        // content also arrives as a plain string on some paths; extractText handles both.
         val content = extractText(mm)
         if (role == "user") {
             // Check for images: first in explicit `images` field, then in content array.
@@ -890,7 +888,7 @@ class PiWebSocket : WebSocketListener() {
     // Extract a plain-text rendering of a pi Message's content field.
     // Pi's wire format is normally an array of typed content blocks:
     //   [{type:"text",text:"..."}, {type:"thinking",thinking:"..."}, {type:"image",...}, ...]
-    // Plain strings still show up for legacy paths and tool results. This helper
+    // Plain strings show up on some paths and tool results. This helper
     // accepts both shapes and returns the concatenated text portion (skipping
     // thinking blocks — those are surfaced separately via the streaming protocol).
     private fun extractText(message: Map<*, *>): String {
@@ -1279,7 +1277,7 @@ class PiWebSocket : WebSocketListener() {
             _agents.value = agentMap.values.toList()
             if (_selectedAgentId.value == REPO_PLACEHOLDER_ID) _selectedAgentId.value = self.id
         }
-        // Prune agents no longer in the session list — e.g. previous host
+        // Prune agents absent from the session list — e.g. previous host
         // processes (each pi restart mints a new self id) or closed peers.
         // Without this, dead tabs linger and the selection can get stuck on a
         // vanished agent, so messages silently go nowhere.

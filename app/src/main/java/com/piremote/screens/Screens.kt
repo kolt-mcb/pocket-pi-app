@@ -903,8 +903,7 @@ fun ChatScreen(
         Column(modifier = Modifier.fillMaxSize().background(bg).imePadding()) {
         PiHeader(status, busy, { vm.disconnect() }, uiTitle?.take(30))
 
-        // Host notify() messages and dropped-send warnings. Previously the
-        // banner list was plumbed all the way here but never drawn.
+        // Host notify() messages and dropped-send warnings.
         if (notifyBanners.isNotEmpty()) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 notifyBanners.takeLast(3).forEach { b -> NotifyBanner(b.content, b.type) }
@@ -931,8 +930,8 @@ fun ChatScreen(
         }
 
         // The mirror IS the session view — it renders pi's whole screen (status,
-        // widgets, loader, footer). No legacy scrollback or duplicate chrome; a
-        // neutral placeholder shows until the first frame arrives (no UI flash).
+        // widgets, loader, footer). A neutral placeholder shows until the first
+        // frame arrives (no UI flash).
         BoxWithConstraints(modifier = Modifier.weight(1f)) {
             // Measured monospace metrics feed the host so it renders at our width.
             val metrics = rememberTtyMetrics(maxWidth)

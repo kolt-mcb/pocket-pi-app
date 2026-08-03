@@ -162,11 +162,11 @@ ST. Emit ST — it is the spec-correct form and what `TtyEscapes` produces.
 - ESC characters inside user-typed content are stripped before rendering, so
   user input cannot inject sequences.
 
-## Legacy chat-stream fields
+## Chat-stream fields
 
-Older builds rendered a chat scrollback from per-message `stream` /
-`streamExpanded` / `ansiLines[]` / `content` fields on the message events,
-with `history` replaying the conversation on connect. The mirror replaced
-that as the primary UI (`client_hello.mirrorOnly` opts out of the history
-replay), but the fields still arrive on message events and are still parsed —
-they're what the notification summaries and session previews read.
+Message events also carry per-message `stream` / `streamExpanded` /
+`ansiLines[]` / `content` fields — a rendered-text form of each message —
+and hosts can replay the conversation as `history` on connect
+(`client_hello.mirrorOnly` opts out of that replay). The app parses these
+fields for notification summaries and session previews; the mirror is the
+primary UI.

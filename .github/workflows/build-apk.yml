@@ -16,9 +16,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           # Full history so `git rev-list --count HEAD` (used by build.gradle.kts
-          # AT BUILD TIME to compute versionCode) returns the real commit count.
-          # A shallow clone made every published APK embed versionCode 101,
-          # which kept the in-app updater reporting "update available" forever.
+          # AT BUILD TIME to compute versionCode) returns the real commit count —
+          # a shallow clone would freeze versionCode and break the in-app
+          # updater's newer-build detection.
           fetch-depth: 0
 
       - name: Set up JDK 17

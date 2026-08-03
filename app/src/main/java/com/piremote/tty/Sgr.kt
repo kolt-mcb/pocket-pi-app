@@ -99,7 +99,7 @@ fun parseAnsiLine(line: String): List<Pair<String, AnsiStyle>> {
         } else if (line[i] == ESC && i + 1 < line.length && line[i + 1] == ']') {
             // OSC sequence (e.g. OSC 8 hyperlinks: ESC]8;;URL ST text ESC]8;; ST).
             // Skip the marker to its terminator — BEL or ST (ESC \) — so the
-            // bare "]8;;" no longer renders as literal text. The link TEXT lives
+            // bare "]8;;" never renders as literal text. The link TEXT lives
             // between the open and close markers and renders normally.
             var j = i + 2
             while (j < line.length && line[j] != BEL && line[j] != ESC) j++
