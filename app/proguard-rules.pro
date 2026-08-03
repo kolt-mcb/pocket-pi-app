@@ -6,10 +6,6 @@
 -keepclassmembers class com.piremote.** { *; }
 -keep class com.piremote.** { *; }
 -keep class com.piremote.db.** { *; }
-#
-# The `applicationId com.piremote` line that used to be here was Gradle DSL
-# accidentally pasted into a ProGuard file — R8 doesn't parse it and the
-# whole rules file fails to compile, which kills minifyReleaseWithR8.
 
 # OkHttp
 -dontwarn okhttp3.internal.platform.**
@@ -22,10 +18,3 @@
 -keepclassmembernames class kotlinx.** {
     volatile <fields>;
 }
-
-# Highlights (dev.snipme:highlights) uses kotlinx.serialization annotations
-# on its model classes. Keep them so the runtime can construct them via
-# reflection; the parsed-tokens path doesn't need it but the @Serializable
-# constructors get scanned on class load.
--keepclassmembers class dev.snipme.highlights.model.** { *; }
--keepnames class dev.snipme.highlights.model.**

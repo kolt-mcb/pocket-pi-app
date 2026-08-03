@@ -9,7 +9,7 @@ package com.piremote.tty
  * - Style is preserved across split points.
  * - Word-aware: prefers breaking at the last space within [WORD_LOOKBACK]
  *   cells of the limit; falls back to a hard break (code, URLs).
- * - Gutter-aware: a line starting with a "│" segment (the MessageNormalizer
+ * - Gutter-aware: a line starting with a "│" segment (a message-border
  *   gutter) repeats "│ " on continuation lines so message borders stay intact.
  */
 

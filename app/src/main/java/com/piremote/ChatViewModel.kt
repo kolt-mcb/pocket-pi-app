@@ -104,7 +104,6 @@ class ChatUIState(
     val selectedSession: StateFlow<String>,
     // ── Global (non-per-agent) flows forwarded from PiWebSocket ──
     val sessions: StateFlow<List<RemoteSession>>,
-    val commands: StateFlow<List<RemoteCommand>>,
     val uiRequests: StateFlow<List<ExtensionUIRequest>>,
     val statuses: StateFlow<Map<String, String>>,
     val widgets: StateFlow<Map<String, List<String>>>,
@@ -159,7 +158,6 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
         selectedSession = _selectedSession,
         // Global flows — forwarded so the Activity never touches PiWebSocket directly.
         sessions = _ws.sessionListFlow,
-        commands = _ws.commandListFlow,
         uiRequests = _ws.uiRequestFlow,
         statuses = _ws.statusesFlow,
         widgets = _ws.widgetsFlow,

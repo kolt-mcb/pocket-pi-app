@@ -4,7 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
-import com.piremote.PiWebSocket
+import com.piremote.AppState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -14,19 +14,18 @@ import com.piremote.dataStore
 
 private const val TAG = "PiTest"
 
-object TestState {
-    val ws = PiWebSocket()
-    var serverUrl = ""
-}
-
+/**
+ * Debug-build-only ADB hook: drive the app's shared PiWebSocket via
+ * broadcasts (see src/debug/AndroidManifest.xml for the intent filter and
+ * the DUMP-permission guard). Not compiled into release builds.
+ */
 class TestReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
         Log.d(TAG, "RID:$intent.action received")
-        val ws = TestState.ws
+        val ws = AppState.ws
         when (intent.action) {
             "com.piremote.test.CONNECT" -> {
                 val url = intent.getStringExtra("url") ?: "ws://10.0.2.2:8765"
-                TestState.serverUrl = url
                 Log.d(TAG, "Connecting to: $url")
                 ws.connect(url)
             }

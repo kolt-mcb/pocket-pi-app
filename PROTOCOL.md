@@ -1,46 +1,92 @@
-# TTY Rendering Protocol
+# Wire protocol
 
-The phone app renders chat content as a terminal: every message is normalized
-into a single ANSI+OSC stream, parsed by `com.piremote.tty.TtyStreamParser`
-into typed blocks (styled text, inline images), and drawn as a continuous
-monospace scrollback. This document is the contract for what the host
-extension (or any program whose output reaches the app) may emit.
+What the app speaks to the [`pi-remote-control`](https://github.com/kolt-mcb/pi-remote-control)
+host extension. Two layers:
 
-## Transport
+1. **Transport** — JSON messages over a WebSocket (`wss://` with a pinned
+   self-signed cert; token auth in the URL). The primary channel is the
+   **screen mirror**: the host renders pi's whole TUI at the phone's column
+   width and streams it as ANSI lines.
+2. **Encoding** — the escape sequences that may appear inside those ANSI
+   lines (SGR styling, hyperlinks, inline images), parsed by
+   `com.piremote.tty.*`.
 
-Escape sequences ride inside JSON string fields, in precedence order:
+The host side of every message below lives in the extension repo's
+`extension.ts`; its README carries the full client→host / host→client tables.
+This document describes what *this app* sends and expects.
 
-- `stream` — the **primary channel**: one ANSI+OSC string holding the
-  message's complete presentation, rendered by the host at the phone's
-  reported width (`viewport` → `clientCols`). The app feeds it through the
-  TTY parser verbatim — no client-side decoration at all. Tool results also
-  carry `streamExpanded`, the expanded variant used when the user taps to
-  expand (absent = same as `stream`).
-- `ansiLines[]` — legacy per-line shape from older hosts (each entry is one
-  line; the app joins with `\n` and adds a gutter). Ignored when `stream`
-  is present.
-- `content` — raw text fallback, rendered client-side as plain wrapped text
-  when neither of the above is present.
+## Connection
 
-`stream` appears on: `message_start`/`message_end` (user messages),
-`message_update` `text_end` / `thinking_end` (final rendered block),
-`message_update` `ansi_snapshot` (throttled re-render of the in-flight
-block, so streaming text is styled), `tool_end`, and every `history` item.
+The QR the extension prints encodes
+`wss://<host>:<port>/?token=<32 hex>&fp=<64 hex sha256>`. The app pins the
+TLS cert by that fingerprint and appends the token; connections with a bad
+token are closed with WS code 4001.
 
-Oversize images the host cannot embed in the stream (> 8 MiB base64) still
-travel as a structured `images[]` array; the app appends them after the
-stream. The host extension renders with pi's own interactive components
-(AssistantMessageComponent, UserMessageComponent, ToolExecutionComponent),
-so the phone shows exactly what the terminal shows.
+First message after connect is the capability handshake:
 
-The host re-sends the full `history` replay whenever the reported viewport
-width changes, re-rendering the whole scrollback at the new width. Hosts in
-peer mode receive the width via `route_viewport` forwarded by the host.
+```json
+{"type":"client_hello","mirrorOnly":true,"diff":true,"deflate":true,"mirrorImages":true}
+```
 
-Because raw program output from the Pi flows through tool output and
-`ansiLines`, standard terminal tools (`imgcat`, kitty `icat`, `chafa`,
-matplotlib terminal backends) render inline images in the app with **zero
-host-extension changes**.
+- `mirrorOnly` — this app renders the screen mirror, not a chat scrollback,
+  so the host skips the (large) history replay on connect.
+- `diff` — accept `mirror_diff` row diffs instead of only full keyframes.
+- `deflate` — accept binary WS messages that are zlib-deflated JSON (the host
+  compresses anything over 512 B; the app inflates via `tty/Inflate.kt`).
+- `mirrorImages` — force image escapes (kitty) into mirror frames even when
+  the host terminal reports no image support.
+
+Then the app sends `{"type":"get_sessions"}` and
+`{"type":"viewport","cols":N}` (re-sent whenever the device width changes —
+the host re-renders the mirror to fit).
+
+## Screen mirror
+
+Subscribe with `{"type":"mirror","on":true,"agentId":<optional peer id>}`.
+The host replies with a keyframe and then a stream of frames/diffs at up to
+~15 fps:
+
+```json
+{"type":"mirror_frame","agentId":"…","seq":123,"lines":["…ANSI…"],
+ "cursor":{"row":r,"col":c},"width":W,"height":H}
+```
+
+```json
+{"type":"mirror_diff","agentId":"…","seq":124,"lineCount":N,
+ "rows":[{"i":17,"t":"…ANSI…"}],"cursor":{…}}
+```
+
+- `lines` are full ANSI strings, one per buffer row, already wrapped to the
+  reported viewport width.
+- A diff applies to the previous frame for the **same `agentId`**: replace
+  row `i` with `t`, then truncate/extend to `lineCount` rows. `seq` gaps mean
+  a dropped frame — the host resends a keyframe when it must resync (e.g.
+  width change, subscribe, backpressure skip).
+- The app keeps one buffer per agentId (capped at 100 000 rows) and renders
+  only the newest frame.
+
+Input goes back as raw bytes:
+`{"type":"mirror_input","data":"…","agentId":<optional>}` — one keystroke or
+paste chunk per message; the host injects it into pi's own input path. This
+is how *everything* is driven: typing, arrow keys, Enter, and `/` opening
+pi's command menu inside the mirror.
+
+## Sessions, files, dialogs
+
+- `{"type":"session_list","sessions":[…]}` — every pi on the host (host +
+  peers); the app shows them as tabs. `prompt`, `slash_command`, `mirror`,
+  and `mirror_input` all accept an agent id to target a specific one.
+- `{"type":"spawn_peer","sessionPath"?,"cwd"?}` — start a new pi on the host,
+  optionally resuming a saved session (list via `get_saved_sessions`) in a
+  directory picked via `list_host_dirs`/`host_dirs`.
+- `{"type":"file","name","mimeType","data","agentId"?}` — a file pushed by
+  the host's `send_file_to_phone` tool; base64 in `data`, surfaced as a
+  download dialog. No hard size cap (device memory dominates).
+- `{"type":"extension_ui_request",…}` / `{"type":"render",…}` — host-driven
+  dialogs, notifications, and ANSI-rendered menus; answered with
+  `extension_ui_response` / `input`.
+- `{"type":"theme_info","theme":{…}}` — pi's active theme palette; the app
+  restyles itself to match.
 
 ## SGR styling (CSI ... m)
 
@@ -57,9 +103,8 @@ Supported codes:
 | `39` / `49` | default foreground / background |
 
 All other CSI sequences (cursor movement, erase, scroll regions) are **parsed
-and silently dropped** — the scrollback is append-only. Full-screen TUIs must
-use render frames (`{type: "render", ...}`) instead, which keep their own
-replace-mode surface.
+and silently dropped** — mirror rows arrive pre-composed, so in-band cursor
+movement has no meaning here.
 
 ## OSC 8 hyperlinks
 
@@ -71,7 +116,7 @@ Link text gets a sub-line tap target that opens the URI in the phone browser.
 `params` (e.g. `id=`) are accepted and ignored. SGR resets inside the link do
 not close it; only `8;;` does.
 
-## OSC 1337 inline images (primary image channel)
+## OSC 1337 inline images
 
 ```
 ESC ] 1337 ; File = inline=1 ; size=N ; mime=image/png ; width=W ; height=H ;
@@ -110,18 +155,18 @@ ST. Emit ST — it is the spec-correct form and what `TtyEscapes` produces.
 
 ## Limits & error handling
 
-- Image payloads: ≤ 8 MiB of base64 (~6 MB decoded). Decoded bitmaps are
-  downsampled to ≤ 2048 px on the longest axis.
-- Other OSC payloads: ≤ 4 KiB.
+- Decoded bitmaps are downsampled to ≤ 2048 px on the longest axis.
+- Non-image OSC payloads: ≤ 4 KiB.
 - Malformed, unterminated, or oversized sequences are **dropped whole**;
   surrounding text is preserved; the parser never throws.
 - ESC characters inside user-typed content are stripped before rendering, so
   user input cannot inject sequences.
 
-## Host migration path
+## Legacy chat-stream fields
 
-Complete as of June 2026 — the host extension renders every message type to
-a single `stream` field (with images embedded as OSC 1337), and the app
-renders it verbatim. The structured fields (`content`, `ansiLines[]`,
-`images[]`) remain as documented above for older hosts and as the raw-data
-fallback when host-side rendering fails.
+Older builds rendered a chat scrollback from per-message `stream` /
+`streamExpanded` / `ansiLines[]` / `content` fields on the message events,
+with `history` replaying the conversation on connect. The mirror replaced
+that as the primary UI (`client_hello.mirrorOnly` opts out of the history
+replay), but the fields still arrive on message events and are still parsed —
+they're what the notification summaries and session previews read.

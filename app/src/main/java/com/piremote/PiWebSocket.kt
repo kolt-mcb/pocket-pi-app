@@ -160,8 +160,6 @@ class PiWebSocket : WebSocketListener() {
     // ── Global state (not per-agent) ──────────────────────────────────
     private val _sessions = MutableStateFlow<List<RemoteSession>>(emptyList())
     val sessionListFlow: StateFlow<List<RemoteSession>> get() = _sessions
-    private val _commands = MutableStateFlow<List<RemoteCommand>>(emptyList())
-    val commandListFlow: StateFlow<List<RemoteCommand>> get() = _commands
     private val _savedSessions = MutableStateFlow<List<SavedSession>>(emptyList())
     val savedSessionsFlow: StateFlow<List<SavedSession>> get() = _savedSessions
     // Host directory browser: response and error states
@@ -658,7 +656,6 @@ class PiWebSocket : WebSocketListener() {
             "history" -> handleHistory(j)
             "session_list" -> handleSessions(j)
             "saved_sessions" -> handleSavedSessions(j)
-            "command_list" -> handleCommands(j)
             "host_dirs" -> handleHostDirs(j)
             "host_dirs_error" -> { _hostDirs.value = null; _hostDirsError.value = Js.gets(j, "message") ?: "unknown error" }
             "mkdir" -> handleMkdir(j)
@@ -1140,16 +1137,6 @@ class PiWebSocket : WebSocketListener() {
         state.stxt = ""
         state.assistingText.value = ""
     }
-    private fun handleCommands(j: Map<*, *>) {
-        val arr = j["commands"] ?: return
-        if (arr !is List<*>) return
-        val list = arr.mapNotNull { c ->
-            if (c !is Map<*, *>) return@mapNotNull null
-            val name = (c["name"] as? String) ?: return@mapNotNull null
-            RemoteCommand(name = name, description = (c["description"] as? String) ?: "")
-        }
-        _commands.value = list
-    }
     /**
      * Apply a full conversation replay from the host. Sent on every (re)connect
      * so the phone shows the whole thread — including turns that happened in the
@@ -1553,11 +1540,6 @@ data class MkdirResult(
 )
 
 // ── Session model ──
-
-data class RemoteCommand(
-    val name: String,
-    val description: String
-)
 
 /** A saved pi session — name, first message preview, message count, last
  *  modified epoch ms. Tap-to-resume from the saved-session browser sends

@@ -24,7 +24,7 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.piremote.test.TestState
+import com.piremote.AppState
 import com.piremote.*
 import com.piremote.theme.*
 
@@ -52,9 +52,9 @@ fun TabletLayout(
     val selReq = uiRequests.value.firstOrNull { it.method in listOf("select", "confirm") }
     val inpReq = uiRequests.value.firstOrNull { it.method in listOf("input", "editor") }
 
-    fun uiRespond(id: String, value: String) = TestState.ws.sendUIResponse(id, value = value)
-    fun uiCancelled(id: String) = TestState.ws.sendUIResponse(id, cancelled = true)
-    fun renderInput(id: String, value: String) = TestState.ws.sendInput(id, value)
+    fun uiRespond(id: String, value: String) = AppState.ws.sendUIResponse(id, value = value)
+    fun uiCancelled(id: String) = AppState.ws.sendUIResponse(id, cancelled = true)
+    fun renderInput(id: String, value: String) = AppState.ws.sendInput(id, value)
 
     // Folder picker state (single source of truth — the sidebar only renders it)
     var showFolderPicker by remember { mutableStateOf(false) }

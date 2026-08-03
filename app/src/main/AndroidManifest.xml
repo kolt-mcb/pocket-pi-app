@@ -71,8 +71,9 @@
                 android:resource="@xml/file_provider_paths" />
         </provider>
 
-        <!-- TestReceiver is registered only in src/debug/AndroidManifest.xml so
-             release builds cannot be driven by external broadcasts. -->
+        <!-- TestReceiver lives entirely in src/debug (class + manifest entry),
+             so release builds neither contain it nor can be driven by external
+             broadcasts. -->
 
     </application>
 

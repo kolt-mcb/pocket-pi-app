@@ -20,6 +20,10 @@ local.properties
 
 # Claude / AI tooling
 .claude/
+.pi/
+
+# Local scratch notes (not part of the published repo)
+.notes/
 
 # OS
 .DS_Store

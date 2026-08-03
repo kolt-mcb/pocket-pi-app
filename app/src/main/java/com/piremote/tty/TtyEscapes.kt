@@ -1,9 +1,9 @@
 package com.piremote.tty
 
 /**
- * ANSI/OSC escape sequence builders — the reference encoder for the protocol
- * the app consumes (see PROTOCOL.md). The host extension and the client-side
- * MessageNormalizer both emit these shapes; TtyStreamParser decodes them.
+ * ANSI/OSC escape sequence builders — the reference encoder for the escape
+ * shapes the app consumes (see PROTOCOL.md). The host extension emits these;
+ * TtyStreamParser decodes them.
  *
  * Terminators: we EMIT ST (ESC \) everywhere — kitty mandates it and it is the
  * spec-correct OSC terminator. The parser ACCEPTS both BEL and ST.

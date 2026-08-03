@@ -43,14 +43,14 @@ import com.piremote.screens.piMono
 import com.piremote.theme.error
 import com.piremote.theme.textMuted
 import androidx.compose.ui.unit.sp
-import com.piremote.test.TestState
+import com.piremote.AppState
 import com.piremote.theme.PiRemoteTheme
 import com.piremote.theme.ThemeManager
 import kotlinx.coroutines.flow.first
 
 class MainActivity : ComponentActivity() {
     // Share PiWebSocket with test receiver so broadcasts work even via ADB
-    private val ws = TestState.ws
+    private val ws = AppState.ws
 
     // Runtime permission launcher for POST_NOTIFICATIONS (API 33+)
     private val notificationsPermissionLauncher = registerForActivityResult(
