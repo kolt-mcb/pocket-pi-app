@@ -446,9 +446,6 @@ class PiWebSocket : WebSocketListener() {
         // arrives. handleSessions promotes this state onto the real self agent
         // once its id is known.
         const val REPO_PLACEHOLDER_ID = "__repo_placeholder__"
-        // Max base64 length for a host-pushed file (~6 MB decoded), matching the
-        // image cap in PROTOCOL.md.
-        const val MAX_FILE_B64 = 8 * 1024 * 1024
         // Theme name check — compiled once, reused per connect.
         private val THEME_LIGHT_RE = Regex("\\blight\\b", RegexOption.IGNORE_CASE)
         // Message types that carry an agentId and must be routed to the correct AgentState.
@@ -515,9 +512,10 @@ class PiWebSocket : WebSocketListener() {
         // full conversation history, which was the bulk of connect latency on a
         // slow link. Old hosts ignore the unknown type and still send history.
         sock?.send("{\"type\":\"client_hello\",\"mirrorOnly\":true,\"diff\":true,\"deflate\":true,\"mirrorImages\":true}")
-        // Request session list and command list on connect
+        // Request the session list on connect. We no longer ask for the slash
+        // command list: nothing has rendered it since the screen mirror landed —
+        // typing "/" shows pi's own command menu in the mirrored frame.
         sock?.send("{\"type\":\"get_sessions\"}")
-        sock?.send("{\"type\":\"get_commands\"}")
         // Flush the device width now that the socket is open (it's usually known
         // before connect, so the initial reportViewport call couldn't send it).
         flushViewport()
@@ -746,11 +744,9 @@ class PiWebSocket : WebSocketListener() {
             // A file pushed from the host for the user to save/share
             "file" -> {
                 val data = Js.gets(j, "data") ?: ""
-                // Cap like images (PROTOCOL.md limits): an unbounded base64 payload
-                // in a StateFlow is an OOM vector from a single frame.
-                if (data.length > MAX_FILE_B64) {
-                    pushBanner("File from pi too large to receive (${data.length / (1024 * 1024)} MiB)", "error")
-                } else if (data.isNotEmpty()) {
+                // Previous cap was ~6 MB decoded / 8 MB base64 from PROTOCOL.md image limit.
+                // No longer enforced — device RAM / process limits dominate over the cap.
+                if (data.isNotEmpty()) {
                     // agentId is stamped by the host (or peer-forward) so the user
                     // sees which agent sent it. Resolve to a display name.
                     val agentId = Js.gets(j, "agentId") ?: ""
