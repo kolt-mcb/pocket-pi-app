@@ -88,7 +88,7 @@ an unsigned `assembleDebug` smoke check and publish nothing.
 ## Protocol
 
 The wire protocol (WS + JSON, mirror frames, escape sequences) is documented
-in [PROTOCOL.md](PROTOCOL.md) and in the
+in [docs/PROTOCOL.md](docs/PROTOCOL.md) and in the
 [extension repo's README](https://github.com/kolt-mcb/pi-remote-control#protocol).
 
 ## License
