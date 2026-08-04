@@ -43,6 +43,18 @@ your machine over fingerprint-pinned TLS
   while the app is backgrounded, and an in-app updater that tracks the
   latest release.
 
+## Yes, it runs DOOM
+
+<p align="center">
+  <img src="docs/screenshots/doom-demo.gif" width="320"
+       alt="DOOM running inside a pi session, mirrored to and played from the phone">
+</p>
+
+The mirror is a real terminal — anything pi renders, the phone renders.
+Here that's [pi-doom](https://github.com/badlogic/pi-doom) in a session
+tab, played from the terminal keyboard
+([full clip](docs/screenshots/doom-demo.mp4)).
+
 ## Getting started
 
 1. **On the machine running pi:**
