@@ -16,25 +16,23 @@ The full terminal, live — no cloud, no accounts, no telemetry.</p>
 
 The companion app for the
 [`pi-remote-control`](https://github.com/kolt-mcb/pi-remote-control) pi
-extension. The extension mirrors pi's live terminal UI over a LAN WebSocket;
-this app renders it and sends your input back. Your phone talks directly to
-your machine over fingerprint-pinned TLS
+extension: your live pi terminal on your phone, with a keyboard to drive it.
+Your phone talks directly to your machine — nothing in between
 ([full-res demo video](docs/screenshots/mirror-demo.mp4)).
 
 ## Features
 
-- **Live terminal mirror** — pi's actual TUI, re-rendered server-side to fit
-  your screen: messages, menus, pickers, spinners, colors. Frames arrive as
-  deflate-compressed row diffs, so it stays smooth on slow links.
+- **Your real terminal, live** — pi's actual screen, resized to fit yours:
+  messages, menus, pickers, spinners, colors. Stays smooth even on slow
+  connections.
 - **Terminal keyboard** — Esc/Tab/arrows, Ctrl chords, and multiline input
   on top of your normal keyboard, autocorrect intact. Typing `/` opens pi's
-  own command menu in the mirror.
-- **Multi-session** — every pi on the host appears as a tab. Switch between
-  them, spawn new sessions in a directory you pick, or resume a saved one.
-- **Inline images** — images the agent shows (kitty graphics / OSC 1337)
-  render right in the mirror, even when the host terminal can't display
-  them.
-- **File delivery** — the agent can push files straight to your phone; they
+  own command menu.
+- **Multi-session** — every pi on your machine appears as a tab. Switch
+  between them, start new ones in a folder you pick, or resume a saved one.
+- **Inline images** — images the agent shows render right in the mirror,
+  even when your terminal can't display them.
+- **File delivery** — the agent can send files straight to your phone; they
   arrive in a download dialog.
 - **Theme mirroring** — the app restyles itself to pi's active palette.
 - **Tablet layout** — side-by-side sessions and a folder picker on large
