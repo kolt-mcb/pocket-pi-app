@@ -1,4 +1,4 @@
-<h1 align="center">Pi Remote Control for Android</h1>
+<h1 align="center">Pocket Pi for Android</h1>
 
 <p align="center"><b>Drive your <a href="https://github.com/earendil-works/pi">pi</a> coding agent from your phone.</b><br>
 The full terminal, live — no cloud, no accounts, no telemetry.</p>
@@ -15,7 +15,7 @@ The full terminal, live — no cloud, no accounts, no telemetry.</p>
 </p>
 
 The companion app for the
-[`pi-remote-control`](https://github.com/kolt-mcb/pi-remote-control) pi
+[`pocket-pi`](https://github.com/kolt-mcb/pocket-pi) pi
 extension: your live pi terminal on your phone, with a keyboard to drive it.
 Your phone talks directly to your machine — nothing in between
 ([full-res demo video](docs/screenshots/mirror-demo.mp4)).
@@ -56,7 +56,7 @@ tab, played from the terminal keyboard
 ## Getting started
 
 1. **On the machine running pi:**
-   `pi install git:github.com/kolt-mcb/pi-remote-control`
+   `pi install git:github.com/kolt-mcb/pocket-pi`
 2. **Start `pi`.** The extension prints a `wss://` URL and a pairing QR code
    (`/remote-qr` re-shows it anytime).
 3. **Install the app** — side-load the APK from
@@ -76,7 +76,7 @@ in-app updater checks it and offers newer builds automatically.
 ## Build from source
 
 ```bash
-git clone https://github.com/kolt-mcb/pi-remote-control-app
+git clone https://github.com/kolt-mcb/pocket-pi-app
 cd pi-remote-control-app
 ./gradlew :app:assembleDebug   # or :app:assembleRelease
 ```
@@ -106,7 +106,7 @@ nothing.
 The wire protocol — WebSocket messages, mirror frames, and the escape
 sequences the renderer understands — is documented in
 [docs/PROTOCOL.md](docs/PROTOCOL.md) and in the
-[extension repo](https://github.com/kolt-mcb/pi-remote-control#protocol).
+[extension repo](https://github.com/kolt-mcb/pocket-pi#protocol).
 
 ## License
 

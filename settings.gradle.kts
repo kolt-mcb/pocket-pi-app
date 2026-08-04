@@ -14,6 +14,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Pi Remote Control"
+rootProject.name = "Pocket Pi"
 
 include(":app")

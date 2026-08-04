@@ -22,7 +22,7 @@ private val VERSION_NAME_RE = Regex("""versionName:\s*(\S+)""")
 // moves, override via the constructor at call-site. The release tag "latest"
 // is the rolling pre-release published by CI on every push to master.
 private const val DEFAULT_RELEASE_API =
-    "https://api.github.com/repos/kolt-mcb/pi-remote-control-app/releases/tags/latest"
+    "https://api.github.com/repos/kolt-mcb/pocket-pi-app/releases/tags/latest"
 
 /**
  * Result of a successful update check. [versionCode] is what the latest
