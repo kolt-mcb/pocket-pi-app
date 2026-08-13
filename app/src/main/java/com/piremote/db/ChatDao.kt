@@ -10,6 +10,9 @@ interface ChatDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(msg: ChatMessageEntity)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(messages: List<ChatMessageEntity>)
+
     // Wipe persisted history for a server when its session is replaced (/new,
     // /resume), so a later reconnect doesn't re-inject the stale conversation.
     @Query("DELETE FROM chat_messages WHERE url = :serverUrl")
@@ -25,6 +28,6 @@ interface ChatDao {
     @Transaction
     suspend fun replaceAllForUrl(serverUrl: String, messages: List<ChatMessageEntity>) {
         deleteByServerUrl(serverUrl)
-        messages.forEach { insert(it) }
+        insertAll(messages)
     }
 }

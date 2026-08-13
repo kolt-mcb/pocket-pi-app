@@ -3,6 +3,7 @@ package com.piremote.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -61,14 +62,6 @@ fun buildAnsiText(
  */
 @Composable
 fun TerminalRenderView(frame: RenderFrame, onInput: (String) -> Unit = {}) {
-    // Pre-parse all ANSI lines once per frame — parseAnsiLine does substringing
-    // and SGR-code decoding; memoizing saves repeated work on every recomposition.
-    val parsedLines = remember(frame) {
-        frame.ansiLines.map { line ->
-            line to parseAnsiLine(line)
-        }
-    }
-
     Box(modifier = Modifier.fillMaxSize().background(bg)) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Title bar
@@ -90,68 +83,87 @@ fun TerminalRenderView(frame: RenderFrame, onInput: (String) -> Unit = {}) {
             // get a clickable modifier; tapping sends the entry back via
             // sendInput, so a render-frame menu (e.g. /resume's session list)
             // is touch-driven with no per-extension UI on the phone.
-            Column(modifier = Modifier.weight(1f).fillMaxWidth().padding(2.dp)) {
-                parsedLines.forEachIndexed { i, (line, segments) ->
-                    if (segments.all { it.first.isEmpty() }) {
-                        Spacer(Modifier.height(12.dp))
-                    } else {
-                        val tap = frame.tapValues.getOrNull(i).orEmpty()
-                        val text = @Composable {
-                            Text(
-                                buildAnsiText(segments),
-                                fontFamily = piMono,
-                                fontSize = 12.sp,
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                            )
-                        }
-                        if (tap.isNotEmpty()) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(min = 44.dp)
-                                    .clickable(
-                                        role = Role.Button,
-                                        onClickLabel = "select $tap",
-                                    ) { onInput(tap) },
-                                contentAlignment = Alignment.CenterStart,
-                            ) { text() }
-                        } else {
-                            text()
-                        }
-                    }
+            // LazyColumn so only visible rows compose, and each row memoizes its
+            // parse + AnnotatedString keyed on the raw line — a frame that
+            // changes one row (spinner, DOOM HUD) re-lays-out one row, not all.
+            LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth().padding(2.dp)) {
+                items(frame.ansiLines.size) { i ->
+                    TerminalLine(
+                        line = frame.ansiLines[i],
+                        tap = frame.tapValues.getOrNull(i).orEmpty(),
+                        onInput = onInput,
+                    )
                 }
             }
 
             // Input area based on mode
             when (frame.inputMode) {
-                "text" -> {
-                    var input by remember { mutableStateOf("") }
-                    Column(modifier = Modifier.fillMaxWidth().background(bgSecondary)) {
-                        HorizontalDivider(color = accent)
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)) {
-                            Text(">", color = accent, fontFamily = piMono, fontSize = 12.sp)
-                            BasicTextField(
-                                value = input,
-                                onValueChange = { input = it },
-                                textStyle = TextStyle(color = textPrimary, fontFamily = piMono, fontSize = 12.sp),
-                                modifier = Modifier.weight(1f),
-                                singleLine = true,
-                                decorationBox = { innerTextField ->
-                                    if (input.isEmpty()) Text("Type here...", color = textMuted, fontFamily = piMono, fontSize = 12.sp)
-                                    else innerTextField()
-                                }
-                            )
-                            Text("⏎", color = textMuted, fontFamily = piMono, fontSize = 14.sp,
-                                modifier = Modifier
-                                    .minimumInteractiveComponentSize()
-                                    .clickable(
-                                        role = Role.Button,
-                                        onClickLabel = "send input",
-                                    ) { onInput(input); input = "" })
-                        }
-                    }
-                }
+                "text" -> TerminalTextInput(onInput)
             }
+        }
+    }
+}
+
+@Composable
+private fun TerminalLine(line: String, tap: String, onInput: (String) -> Unit) {
+    val styled = remember(line) {
+        val segments = parseAnsiLine(line)
+        if (segments.all { it.first.isEmpty() }) null else buildAnsiText(segments)
+    }
+    if (styled == null) {
+        Spacer(Modifier.height(12.dp))
+        return
+    }
+    val text = @Composable {
+        Text(
+            styled,
+            fontFamily = piMono,
+            fontSize = 12.sp,
+            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        )
+    }
+    if (tap.isNotEmpty()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 44.dp)
+                .clickable(
+                    role = Role.Button,
+                    onClickLabel = "select $tap",
+                ) { onInput(tap) },
+            contentAlignment = Alignment.CenterStart,
+        ) { text() }
+    } else {
+        text()
+    }
+}
+
+// Own composable so typing recomposes just the input row, not the line list.
+@Composable
+private fun TerminalTextInput(onInput: (String) -> Unit) {
+    var input by remember { mutableStateOf("") }
+    Column(modifier = Modifier.fillMaxWidth().background(bgSecondary)) {
+        HorizontalDivider(color = accent)
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)) {
+            Text(">", color = accent, fontFamily = piMono, fontSize = 12.sp)
+            BasicTextField(
+                value = input,
+                onValueChange = { input = it },
+                textStyle = TextStyle(color = textPrimary, fontFamily = piMono, fontSize = 12.sp),
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                decorationBox = { innerTextField ->
+                    if (input.isEmpty()) Text("Type here...", color = textMuted, fontFamily = piMono, fontSize = 12.sp)
+                    else innerTextField()
+                }
+            )
+            Text("⏎", color = textMuted, fontFamily = piMono, fontSize = 14.sp,
+                modifier = Modifier
+                    .minimumInteractiveComponentSize()
+                    .clickable(
+                        role = Role.Button,
+                        onClickLabel = "send input",
+                    ) { onInput(input); input = "" })
         }
     }
 }

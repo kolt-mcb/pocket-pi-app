@@ -88,7 +88,11 @@ fun ImageViewerDialog(image: TtyBlock.Image, onDismiss: () -> Unit) {
             scale = (scale * zoom).coerceIn(1f, 8f)
             offset += pan
         }
-        val bitmap: Bitmap? = remember(image.base64) { decodeBase64Image(image.base64) }
+        // Usually a synchronous cache hit (the inline thumbnail decoded it);
+        // a cold miss decodes off-main instead of stalling the dialog frame.
+        val bitmap by produceState(initialValue = peekDecodedImage(image.base64), image.base64) {
+            if (value == null) value = withContext(Dispatchers.Default) { decodeBase64Image(image.base64) }
+        }
         Box(
             modifier = Modifier
                 .fillMaxSize()

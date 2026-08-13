@@ -85,9 +85,11 @@ class MainActivity : ComponentActivity() {
                 // Collect flows from the single state object — the Activity
                 // never reaches past the ViewModel into PiWebSocket directly.
                 val url by st.serverUrl.collectAsState()
-                val inp by st.inputText.collectAsState()
-                val ms by st.messages.collectAsState()
-                val assist by st.streamingText.collectAsState()
+                // NOTE: inputText / messages / streamingText are deliberately NOT
+                // collected here — messages re-emits on every streamed token and
+                // inputText on every keystroke, which would invalidate this root
+                // scope each time. They're collected inside the (disconnected)
+                // branches that actually render them.
                 val status by st.status.collectAsState()
                 val busy by st.busy.collectAsState()
                 val urlHistory by st.urlHistory.collectAsState()
@@ -206,7 +208,10 @@ class MainActivity : ComponentActivity() {
                             savedSessions = savedSessions,
                             renderFrame = renderFrame,
                         )
-                    isTablet ->
+                    isTablet -> {
+                        val inp by st.inputText.collectAsState()
+                        val ms by st.messages.collectAsState()
+                        val assist by st.streamingText.collectAsState()
                         TabletConnectScreen(
                             vm = vm,
                             url = url,
@@ -217,6 +222,7 @@ class MainActivity : ComponentActivity() {
                             urlHistory = urlHistory,
                             sessions = sessions,
                         )
+                    }
                     // ── Phone layout (unchanged) ─────────────────
                     status == ConnectionStatus.Connected && currentScreen == ConnectedScreen.Chat ->
                         ChatScreen(vm, status, busy, sessions, selectedSession,
@@ -226,8 +232,12 @@ class MainActivity : ComponentActivity() {
                         )
                     status == ConnectionStatus.Connected ->
                         SessionsScreen(vm, sessions, selectedSession, compacting, clientCount, savedSessions)
-                    else ->
+                    else -> {
+                        val inp by st.inputText.collectAsState()
+                        val ms by st.messages.collectAsState()
+                        val assist by st.streamingText.collectAsState()
                         ConnectScreen(vm, url, inp, ms, assist, status, urlHistory, sessions)
+                    }
                 }
 
                 // Host-pushed file downloads (both form factors)

@@ -30,6 +30,12 @@ private val bitmapCache = object : android.util.LruCache<Int, Bitmap>(48 * 1024 
     override fun sizeOf(key: Int, value: Bitmap): Int = value.byteCount
 }
 
+/** Cache-only lookup: the already-decoded Bitmap, or null without decoding.
+ *  Lets composables show a cache hit synchronously and defer the (100ms+ for
+ *  a large image) decode to a background dispatcher instead of blocking the
+ *  frame inside composition. */
+fun peekDecodedImage(base64: String): Bitmap? = bitmapCache.get(base64.hashCode())
+
 /**
  * Decode a base64 image to a Bitmap, downsampled to ≤ [MAX_DECODE_DIM] px on the
  * longest axis. Cached by base64 hash. Returns null on any decode failure.

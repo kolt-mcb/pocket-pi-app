@@ -24,6 +24,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.sample
 import com.piremote.db.ChatDatabase
 import com.piremote.db.ChatMessageEntity
 
@@ -190,6 +192,7 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
         } catch (_: Throwable) {}
     }
 
+    @OptIn(kotlinx.coroutines.FlowPreview::class) // Flow.sample, for FGS-update throttling
     fun connect() {
         val u = _url.value.trim()
         if (u.isBlank()) return   // don't open a socket to "" or pollute URL history
@@ -290,7 +293,14 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
                 when (st) {
                     is ConnectionStatus.Connected -> {
                         try { PiService.start(_ctx, host) } catch (_: Exception) {}
+                        // messageFlow re-emits on every streamed token (each delta publishes a
+                        // new list instance), and each collect here is a startForegroundService
+                        // binder round-trip. distinctUntilChanged drops the per-token no-ops
+                        // (size/busy unchanged); sample caps notification churn at 1/s, which
+                        // is also Android's own notification rate-limit territory.
                         combine(_ws.busyFlow, _ws.messageFlow) { busy, msgs -> busy to msgs.size }
+                            .distinctUntilChanged()
+                            .sample(1_000)
                             .collect { (busy, count) ->
                                 try { PiService.start(_ctx, host, busy, count) } catch (_: Exception) {}
                             }

@@ -50,6 +50,12 @@ class PiWebSocket : WebSocketListener() {
         val builder = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
+            // readTimeout only covers the HTTP upgrade — OkHttp removes it once
+            // the websocket is established. Without a ping, a half-open link
+            // (Wi-Fi roam, NAT timeout, host sleep) never fails: status stays
+            // "Connected" while frames silently stop. A missed pong surfaces
+            // onFailure, which drives the existing auto-reconnect.
+            .pingInterval(15, TimeUnit.SECONDS)
         val uri = try { URI(url) } catch (_: Exception) { null }
         val fp = uri?.query
             ?.split('&')
@@ -92,10 +98,18 @@ class PiWebSocket : WebSocketListener() {
 
         // Streaming bookkeeping — was global before; now per-agent so two
         // simultaneous text streams don't interfere.
-        var stxt = ""
+        val stxt = StringBuilder()
+        val thinkTxt = StringBuilder()
         val tbufs = mutableMapOf<String, StringBuilder>()
         val turnToolCalls = mutableListOf<String>()
         var agentStartedAt = 0L
+        // Deltas arrive far faster than the UI can usefully render, and every
+        // publish copies the accumulated text plus the whole message list. These
+        // timestamps gate publishes to ~10/s per surface; the *_end events carry
+        // the complete text, so a throttled-away tail is never lost.
+        var lastTextFlushMs = 0L
+        var lastThinkFlushMs = 0L
+        var lastToolFlushMs = 0L
     }
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -444,6 +458,9 @@ class PiWebSocket : WebSocketListener() {
         // arrives. handleSessions promotes this state onto the real self agent
         // once its id is known.
         const val REPO_PLACEHOLDER_ID = "__repo_placeholder__"
+        // Minimum interval between StateFlow publishes for streaming text /
+        // thinking / tool output (~10 fps). See AgentState.lastTextFlushMs.
+        private const val STREAM_FLUSH_MS = 100L
         // Theme name check — compiled once, reused per connect.
         private val THEME_LIGHT_RE = Regex("\\blight\\b", RegexOption.IGNORE_CASE)
         // Message types that carry an agentId and must be routed to the correct AgentState.
@@ -520,16 +537,18 @@ class PiWebSocket : WebSocketListener() {
     override fun onFailure(ws: WebSocket, t: Throwable, r: okhttp3.Response?) {
         if (ws !== sock) return   // stale socket we already abandoned
         val msg = t.message ?: "Connection failed"
-        // Auto-reconnect with increasing backoff: 2s, 4s, 8s, 16s, then capped
-        // at 32s. Runs on `scope` so it's cancellable and consistent with the
-        // rest of the class rather than spawning a raw thread per retry.
+        // Auto-reconnect: a fast 250ms first attempt (most drops are transient
+        // blips — a fixed 2s floor froze the mirror noticeably), then increasing
+        // backoff 2s, 4s, 8s, 16s, capped at 32s. Runs on `scope` so it's
+        // cancellable and consistent with the rest of the class rather than
+        // spawning a raw thread per retry.
         if (retryCount < 10 && pendingUrl.isNotBlank()) {
             retryCount++
             // Reflect the link is down while we back off, instead of leaving the
             // UI (and FGS notification) claiming a live "Connected" for up to ~32s.
             _s.value = ConnectionStatus.Connecting
             reconnectJob = scope.launch {
-                delay(2000L shl minOf(retryCount - 1, 4))
+                delay(if (retryCount == 1) 250L else 2000L shl minOf(retryCount - 2, 4))
                 reconnect()
             }
         } else {
@@ -619,7 +638,8 @@ class PiWebSocket : WebSocketListener() {
             when (tp) {
                 "agent_start" -> {
                     state.busy.value = true
-                    state.stxt = ""
+                    state.stxt.setLength(0)
+                    state.thinkTxt.setLength(0)
                     state.tbufs.clear()
                     state.thinking.value = ""
                     state.turnToolCalls.clear()
@@ -954,9 +974,9 @@ class PiWebSocket : WebSocketListener() {
 
     private fun msgUpd(state: AgentState, j: Map<*, *>) {
         val ev = Js.gets(j, "eventType") ?: return
-        if (ev == "text_start") { state.stxt = ""; addP(state) }
-        if (ev == "text_delta") { val d = Js.gets(j, "delta") ?: return; state.stxt += d; pushSt(state, state.stxt); state.assistingText.value = state.stxt }
-        if (ev == "text_end") es(state, state.stxt, Js.gets(j, "stream"))
+        if (ev == "text_start") { state.stxt.setLength(0); addP(state) }
+        if (ev == "text_delta") { val d = Js.gets(j, "delta") ?: return; state.stxt.append(d); flushText(state) }
+        if (ev == "text_end") es(state, state.stxt.toString(), Js.gets(j, "stream"))
         // Styled streaming: the host periodically re-renders the in-flight
         // text/thinking block and ships a snapshot; show it on the Streaming
         // bubble so markdown styling appears while the text streams.
@@ -966,11 +986,11 @@ class PiWebSocket : WebSocketListener() {
             val idx = ml.indexOfLast { it.type == MessageToolType.Streaming }
             if (idx >= 0) { ml[idx] = ml[idx].copy(stream = stream); state.messages.value = ml }
         }
-        if (ev == "thinking_start") state.thinking.value = ""
-        if (ev == "thinking_delta") { val d = Js.gets(j, "delta") ?: return; state.thinking.value += d; state.assistingText.value = state.thinking.value }
+        if (ev == "thinking_start") { state.thinkTxt.setLength(0); state.thinking.value = "" }
+        if (ev == "thinking_delta") { val d = Js.gets(j, "delta") ?: return; state.thinkTxt.append(d); flushThinking(state) }
         if (ev == "thinking_end") {
             // Convert thinking text to a Thinking message type instead of dropping it
-            val thinkingText = state.thinking.value
+            val thinkingText = state.thinkTxt.toString()
             if (thinkingText.isNotBlank()) {
                 state.messages.value = state.messages.value + ChatMessage(
                     type = MessageToolType.Thinking, content = thinkingText,
@@ -980,6 +1000,7 @@ class PiWebSocket : WebSocketListener() {
                 // Remove blank streaming placeholders
                 state.messages.value = state.messages.value.filterNot { it.type == MessageToolType.Streaming && it.content.isBlank() }
             }
+            state.thinkTxt.setLength(0)
             state.thinking.value = ""
             // Drop any thinking ansi_snapshot left on the Streaming bubble so
             // the upcoming text stream doesn't show stale thinking rendering.
@@ -1021,6 +1042,12 @@ class PiWebSocket : WebSocketListener() {
         val buf = state.tbufs[id]
         if (buf != null) {
             buf.append(content)
+            // Throttled: re-materializing buf (build logs can be MBs) and copying
+            // the message list per update is the cost; toolEnd writes the full
+            // buffered content, so skipped updates only delay display briefly.
+            val now = System.currentTimeMillis()
+            if (now - state.lastToolFlushMs < STREAM_FLUSH_MS) return
+            state.lastToolFlushMs = now
             val ml = state.messages.value.toMutableList()
             val idx = ml.indexOfLast { it.toolCallId == id && it.type == MessageToolType.Streaming }
             if (idx >= 0) {
@@ -1105,6 +1132,25 @@ class PiWebSocket : WebSocketListener() {
         if (!state.messages.value.any { it.type == MessageToolType.Streaming && it.content == "" })
             state.messages.value = state.messages.value + ChatMessage(type = MessageToolType.Streaming)
     }
+    /** Publish accumulated streaming text at most every STREAM_FLUSH_MS. The
+     *  first delta always flushes (lastTextFlushMs starts at 0) so the bubble
+     *  appears immediately; text_end publishes the complete text via es(). */
+    private fun flushText(state: AgentState) {
+        val now = System.currentTimeMillis()
+        if (now - state.lastTextFlushMs < STREAM_FLUSH_MS) return
+        state.lastTextFlushMs = now
+        val t = state.stxt.toString()
+        pushSt(state, t)
+        state.assistingText.value = t
+    }
+    private fun flushThinking(state: AgentState) {
+        val now = System.currentTimeMillis()
+        if (now - state.lastThinkFlushMs < STREAM_FLUSH_MS) return
+        state.lastThinkFlushMs = now
+        val t = state.thinkTxt.toString()
+        state.thinking.value = t
+        state.assistingText.value = t
+    }
     private fun pushSt(state: AgentState, t: String) {
         // Match the last Streaming bubble unconditionally — pushSt is called with
         // the *accumulated* delta text, and predicating on content=="" meant only
@@ -1115,7 +1161,7 @@ class PiWebSocket : WebSocketListener() {
         if (idx >= 0) { ml[idx] = ml[idx].copy(content = t); state.messages.value = ml }
     }
     private fun es(state: AgentState, finalText: String?, stream: String? = null) {
-        val sub = finalText ?: state.stxt
+        val sub = finalText ?: state.stxt.toString()
         if (sub.isNotBlank()) {
             val ml = state.messages.value.toMutableList()
             val idx = ml.indexOfLast { it.type == MessageToolType.Streaming }
@@ -1132,7 +1178,7 @@ class PiWebSocket : WebSocketListener() {
         } else {
             state.messages.value = state.messages.value.filterNot { it.type == MessageToolType.Streaming && it.content.isBlank() }
         }
-        state.stxt = ""
+        state.stxt.setLength(0)
         state.assistingText.value = ""
     }
     /**
@@ -1255,7 +1301,8 @@ class PiWebSocket : WebSocketListener() {
                 a.assistingText.value = ""
                 a.thinking.value = ""
                 a.turnSummary.value = null
-                a.stxt = ""
+                a.stxt.setLength(0)
+                a.thinkTxt.setLength(0)
                 a.tbufs.clear()
                 a.turnToolCalls.clear()
                 // Self session replaced → also wipe persisted DB history so a

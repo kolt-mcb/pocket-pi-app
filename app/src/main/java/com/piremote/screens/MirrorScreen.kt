@@ -45,6 +45,8 @@ import com.piremote.tty.AnsiStyle
 import com.piremote.tty.MirrorItem
 import com.piremote.tty.TtyBlock
 import com.piremote.tty.parseMirrorLine
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 private const val ESC = "\u001b"
@@ -144,26 +146,39 @@ fun MirrorSurface(
     // Tapping an inline image opens the fullscreen viewer (zoom + save), instead
     // of forwarding the tap as an SGR click to the host.
     var viewerImage by remember { mutableStateOf<TtyBlock.Image?>(null) }
-    LaunchedEffect(listState.isScrollInProgress) {
-        if (listState.isScrollInProgress) {
-            followBottom = false
-        } else {
-            // Settled: resume follow only if we're at the bottom; otherwise leave
-            // followBottom as-is (don't clobber the initial true).
-            val info = listState.layoutInfo
-            val last = info.visibleItemsInfo.lastOrNull()
-            if (last == null || last.index >= info.totalItemsCount - 1) followBottom = true
+    // The running gesture/scroll coroutines below outlive any single frame; go
+    // through this state so they see the frame of the moment they act, not the
+    // one captured when their effect launched.
+    val currentFrame by rememberUpdatedState(frame)
+    // snapshotFlow rather than keying an effect on isScrollInProgress: a key
+    // read here in composition would recompose the whole surface on every
+    // scroll start/stop.
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+            if (scrolling) {
+                followBottom = false
+            } else {
+                // Settled: resume follow only if we're at the bottom; otherwise leave
+                // followBottom as-is (don't clobber the initial true).
+                val info = listState.layoutInfo
+                val last = info.visibleItemsInfo.lastOrNull()
+                if (last == null || last.index >= info.totalItemsCount - 1) followBottom = true
+            }
         }
     }
     // Stick to the bottom as new frames arrive (and on the first frame after
     // connect): scrollToItem(last) clamps to the end, leaving the latest line at
-    // the viewport bottom. Keyed on frame.seq (not line content): a frame that
+    // the viewport bottom. Reacts to frame.seq (not line content): a frame that
     // arrives mid-fling bails on isScrollInProgress, and seq keeps ticking so
     // the very next frame retries — a content key would drop the scroll until
-    // the buffer happened to change again.
-    LaunchedEffect(frame.seq) {
-        if (followBottom && frame.lines.isNotEmpty() && !listState.isScrollInProgress) {
-            listState.scrollToItem(frame.lines.size - 1)
+    // the buffer happened to change again. One long-lived coroutine instead of
+    // a LaunchedEffect relaunched per delta.
+    LaunchedEffect(listState) {
+        snapshotFlow { currentFrame.seq }.collect {
+            val f = currentFrame
+            if (followBottom && f.lines.isNotEmpty() && !listState.isScrollInProgress) {
+                listState.scrollToItem(f.lines.size - 1)
+            }
         }
     }
 
@@ -185,11 +200,15 @@ fun MirrorSurface(
                         // Quick tap → SGR click. Find the visible row under the tap
                         // (robust to variable-height image rows), then map to the
                         // host's 1-based, viewport-relative coordinates.
+                        // Hit-test against the frame as of the tap: this handler
+                        // is keyed only on width/height, so the lambda-captured
+                        // `frame` goes stale while the stream repaints.
+                        val f = currentFrame
                         val hit = listState.layoutInfo.visibleItemsInfo.firstOrNull {
                             down.position.y >= it.offset && down.position.y < it.offset + it.size
                         }
                         val lineIdx = hit?.index ?: listState.firstVisibleItemIndex
-                        val tapped = frame.lines.getOrNull(lineIdx)?.let { parseMirrorLine(it) }
+                        val tapped = f.lines.getOrNull(lineIdx)?.let { parseMirrorLine(it) }
                         if (tapped is MirrorItem.Img) {
                             // Tap on an inline image → open the viewer (zoom + save),
                             // don't forward it as a terminal click.
@@ -203,10 +222,10 @@ fun MirrorSurface(
                             if (link != null) {
                                 try { uriHandler.openUri(link.url) } catch (_: Exception) {}
                             } else {
-                                val viewportTop = maxOf(0, frame.lines.size - frame.height)
+                                val viewportTop = maxOf(0, f.lines.size - f.height)
                                 val row = lineIdx - viewportTop + 1
                                 val col = col0 + 1
-                                if (row in 1..frame.height && col in 1..frame.width) {
+                                if (row in 1..f.height && col in 1..f.width) {
                                     onInput("$ESC[<0;$col;${row}M") // press
                                     onInput("$ESC[<0;$col;${row}m") // release
                                 }
@@ -294,7 +313,12 @@ fun MirrorSurface(
  *  fails (e.g. an oversized or corrupt payload). */
 @Composable
 private fun MirrorImageItem(image: TtyBlock.Image) {
-    val bitmap = remember(image.base64) { decodeBase64Image(image.base64) }
+    // Cache hit renders synchronously (no flicker on scroll-back); a miss
+    // decodes off-main so a multi-MB payload doesn't stall composition.
+    val bitmapState by produceState(initialValue = peekDecodedImage(image.base64), image.base64) {
+        if (value == null) value = withContext(Dispatchers.Default) { decodeBase64Image(image.base64) }
+    }
+    val bitmap = bitmapState
     if (bitmap == null) {
         Text("[image]", fontFamily = piMono, fontSize = 12.sp, color = textMuted)
         return
