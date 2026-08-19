@@ -863,6 +863,8 @@ fun ChatScreen(
         // widgets, footer), so we suppress the app's duplicate chrome below to
         // avoid a second "Working..." spinner and stray separators.
         val mirrorFrame by vm.mirrorFrame.collectAsState()
+        // Terminal text size, pinch-adjustable and persisted across launches.
+        val ttyFontSp by vm.ttyFontSp.collectAsState()
         val selfId = sessions.firstOrNull { it.isSelf }?.id
         val chosen = sessions.firstOrNull { it.id == selectedSession }
             ?: sessions.firstOrNull { it.isSelf }
@@ -934,7 +936,10 @@ fun ChatScreen(
         // frame arrives (no UI flash).
         BoxWithConstraints(modifier = Modifier.weight(1f)) {
             // Measured monospace metrics feed the host so it renders at our width.
-            val metrics = rememberTtyMetrics(maxWidth)
+            // Pinching the mirror changes ttyFontSp, which re-measures the grid and
+            // reports the new column count, so pi re-composes at the new size.
+            val ttyFont = ttyFontSp.sp
+            val metrics = rememberTtyMetrics(maxWidth, ttyFont)
             LaunchedEffect(metrics.cols) { vm.reportViewport(metrics.cols) }
             if (liveFrame != null) {
                 MirrorSurface(
@@ -942,6 +947,9 @@ fun ChatScreen(
                     modifier = Modifier.fillMaxSize(),
                     onInput = { vm.sendMirrorInput(it, mirrorTarget) },
                     onRequestKeyboard = openKeyboard,
+                    fontSize = ttyFont,
+                    onZoom = { vm.zoomTtyFont(it) },
+                    onZoomEnd = { vm.saveTtyFontSp() },
                 )
             } else {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {

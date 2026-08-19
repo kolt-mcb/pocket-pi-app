@@ -4,6 +4,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroidSize
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,7 +25,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
@@ -36,6 +40,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
 import com.piremote.MirrorFrame
 import com.piremote.theme.accent
@@ -48,6 +53,7 @@ import com.piremote.tty.parseMirrorLine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.math.abs
 
 private const val ESC = "\u001b"
 
@@ -86,6 +92,42 @@ private fun linkSpansForLine(segments: List<Pair<String, AnsiStyle>>): List<Link
 }
 
 /**
+ * Two-finger pinch → terminal text size, without stealing one-finger scrolling
+ * or taps. Events are watched on the Initial pass so a pinch claims them before
+ * the LazyColumn reads the two fingers as a scroll; a single-pointer gesture is
+ * never consumed, so scroll, tap-to-click and long-press selection are untouched.
+ */
+private fun Modifier.pinchTextSize(
+    onZoom: (Float) -> Unit,
+    onZoomEnd: () -> Unit,
+) = pointerInput(Unit) {
+    awaitEachGesture {
+        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        var zooming = false
+        var slack = 1f
+        do {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            if (event.changes.count { it.pressed } >= 2) {
+                val zoom = event.calculateZoom()
+                if (!zooming && zoom != 1f) {
+                    // Touch slop, in the same terms Compose's own transform
+                    // detector uses: ignore the incidental spread of a two-finger
+                    // scroll until the pinch is clearly a pinch.
+                    slack *= zoom
+                    val span = event.calculateCentroidSize(useCurrent = false)
+                    if (abs(slack - 1f) * span > viewConfiguration.touchSlop) zooming = true
+                }
+                if (zooming) {
+                    if (zoom != 1f) onZoom(zoom)
+                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                }
+            }
+        } while (event.changes.any { it.pressed })
+        if (zooming) onZoomEnd()
+    }
+}
+
+/**
  * Live terminal render of a pi session (tty mirror). Drop-in content for the
  * session view: shows the host TUI's composed frames verbatim — widgets,
  * overlays, autocomplete, everything — and maps taps to SGR mouse events at
@@ -97,8 +139,10 @@ fun MirrorSurface(
     modifier: Modifier,
     onInput: (String) -> Unit,
     onRequestKeyboard: () -> Unit = {},
+    fontSize: TextUnit = 12.sp,
+    onZoom: (Float) -> Unit = {},
+    onZoomEnd: () -> Unit = {},
 ) {
-    val fontSize = 12.sp
     val density = LocalDensity.current
     val uriHandler = LocalUriHandler.current
     // Measure the real glyph ADVANCE (width) so taps map to the host's columns.
@@ -190,7 +234,13 @@ fun MirrorSurface(
     SelectionContainer {
         LazyColumn(
             state = listState,
-            modifier = modifier.fillMaxSize().background(bg).pointerInput(frame.width, frame.height) {
+            modifier = modifier
+                .fillMaxSize()
+                .background(bg)
+                // Declared before the tap handler so it sits outside it and sees
+                // the Initial pass first.
+                .pinchTextSize(onZoom, onZoomEnd)
+                .pointerInput(frame.width, frame.height) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val up = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {

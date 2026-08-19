@@ -2,6 +2,7 @@ package com.piremote
 
 import android.content.Context
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -32,6 +33,14 @@ import com.piremote.db.ChatMessageEntity
 val Context.dataStore by preferencesDataStore(name = "settings")
 val KEY_URL = stringPreferencesKey("last_server_url")
 val KEY_URL_HISTORY = stringSetPreferencesKey("url_history")
+val KEY_TTY_FONT_SP = floatPreferencesKey("tty_font_sp")
+
+// Terminal text size, in sp. The default matches the size the mirror shipped
+// with; the bounds keep a pinch from collapsing the grid to a smear or blowing
+// it up to two columns wide.
+const val TTY_FONT_SP_DEFAULT = 12f
+const val TTY_FONT_SP_MIN = 6f
+const val TTY_FONT_SP_MAX = 32f
 
 sealed class ConnectionStatus {
     data object Disconnected : ConnectionStatus()
@@ -144,6 +153,32 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
     val mirrorFrame: StateFlow<MirrorFrame?> get() = _ws.mirrorFrameFlow
     fun setMirror(on: Boolean, agentId: String = "") { _ws.setMirror(on, agentId) }
     fun sendMirrorInput(data: String, agentId: String = "") { _ws.sendMirrorInput(data, agentId) }
+
+    // ── Terminal text size (pinch-to-zoom on the mirror) ──
+    private val _ttyFontSp = MutableStateFlow(TTY_FONT_SP_DEFAULT)
+    val ttyFontSp: StateFlow<Float> = _ttyFontSp
+
+    /** Multiply the current size by a pinch's zoom factor. Live during the
+     *  gesture — state only, no disk write per frame. */
+    fun zoomTtyFont(factor: Float) {
+        _ttyFontSp.value = (_ttyFontSp.value * factor).coerceIn(TTY_FONT_SP_MIN, TTY_FONT_SP_MAX)
+    }
+
+    /** Persist the size once the pinch settles — one write per gesture. */
+    fun saveTtyFontSp() {
+        val sp = _ttyFontSp.value
+        viewModelScope.launch {
+            try { _ctx.dataStore.edit { it[KEY_TTY_FONT_SP] = sp } } catch (_: Throwable) {}
+        }
+    }
+
+    /** Call from a coroutine scope — never call from main thread directly. */
+    suspend fun loadTtyFontSp() {
+        try {
+            val saved = _ctx.dataStore.data.first()[KEY_TTY_FONT_SP] ?: return
+            _ttyFontSp.value = saved.coerceIn(TTY_FONT_SP_MIN, TTY_FONT_SP_MAX)
+        } catch (_: Throwable) {}
+    }
 
     // ── Host-pushed files ──
     val fileDownload: StateFlow<FileDownload?> get() = _ws.fileDownloadFlow

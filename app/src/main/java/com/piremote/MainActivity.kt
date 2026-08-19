@@ -113,6 +113,7 @@ class MainActivity : ComponentActivity() {
                 // Load DataStore on startup
                 LaunchedEffect(Unit) {
                     vm.loadUrlHistory()
+                    vm.loadTtyFontSp()
                     val prefs = dataStore.data.first()
                     val lastUrl = prefs[KEY_URL] ?: ""
                     if (lastUrl.isNotBlank()) vm.setServerUrl(lastUrl)
