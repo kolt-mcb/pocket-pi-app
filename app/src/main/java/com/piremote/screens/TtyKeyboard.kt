@@ -1,6 +1,7 @@
 package com.piremote.screens
 
 import android.net.Uri
+import android.view.HapticFeedbackConstants
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -38,6 +39,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -73,6 +75,9 @@ object TtyKeys {
     const val LEFT = "\u001b[D"
     const val CTRL_C = "\u0003"
     const val CTRL_D = "\u0004"
+    // Shift-Tab is its own sequence (CSI Z), not a modified Tab — TUIs read it
+    // to cycle backwards through completions and fields.
+    const val BACK_TAB = "\u001b[Z"
 
     // Bracketed paste: pi's editor treats text between these markers as a literal
     // paste (multi-line safe — embedded newlines don't submit, large content
@@ -81,23 +86,35 @@ object TtyKeys {
     const val PASTE_START = "\u001b[200~"
     const val PASTE_END = "\u001b[201~"
 
+    /**
+     * Shift-modified cursor key: ESC[A becomes ESC[1;2A — the xterm convention of
+     * a "1;<mods>" parameter, where 2 is shift. Anything that isn't a bare cursor
+     * sequence, and every unshifted press, passes through unchanged.
+     */
+    fun shifted(seq: String, shift: Boolean): String =
+        if (shift && seq.length == 3 && seq.startsWith("$ESC[") && seq[2] in "ABCD")
+            "$ESC[1;2${seq[2]}" else seq
+
     /** Wrap clipboard [text] for a bracketed paste into pi's prompt. Empty -> "". */
     fun bracketedPaste(text: String): String =
         if (text.isEmpty()) "" else PASTE_START + text.replace("\r\n", "\n") + PASTE_END
 
     /**
-     * Encode typed [text] into raw terminal bytes. Sticky [ctrl]/[alt] are
-     * one-shot: they apply to the FIRST character only (the caller clears them
-     * after). Newlines become carriage returns (what a TTY expects for Enter).
+     * Encode typed [text] into raw terminal bytes. Sticky [ctrl]/[alt]/[shift]
+     * are one-shot: they apply to the FIRST character only (the caller clears
+     * them after). Newlines become carriage returns (what a TTY expects for
+     * Enter).
      *
      * Ctrl maps a key to its control byte (Ctrl-A=0x01 … Ctrl-_=0x1f); Alt
-     * prefixes ESC ("meta sends escape", the xterm convention).
+     * prefixes ESC ("meta sends escape", the xterm convention); Shift uppercases
+     * — a terminal has no shift byte, the shifted character IS the key.
      */
-    fun encode(text: String, ctrl: Boolean, alt: Boolean): String {
+    fun encode(text: String, ctrl: Boolean, alt: Boolean, shift: Boolean = false): String {
         if (text.isEmpty()) return ""
         val sb = StringBuilder()
         text.forEachIndexed { i, c ->
-            val ch = if (c == '\n') '\r' else c
+            var ch = if (c == '\n') '\r' else c
+            if (i == 0 && shift) ch = ch.uppercaseChar()
             if (i == 0 && (ctrl || alt)) {
                 if (alt) sb.append(ESC)
                 sb.append(if (ctrl) ctrlByte(ch) else ch)
@@ -118,7 +135,8 @@ object TtyKeys {
 class StickyMods {
     var ctrl by mutableStateOf(false)
     var alt by mutableStateOf(false)
-    fun clear() { ctrl = false; alt = false }
+    var shift by mutableStateOf(false)
+    fun clear() { ctrl = false; alt = false; shift = false }
 }
 
 /**
@@ -211,14 +229,18 @@ private fun ModifierKeyRow(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            KeyCap("esc") { onBytes(TtyKeys.ESC) }
-            KeyCap("tab") { onBytes(TtyKeys.TAB) }
+            // Emitting a key consumes an armed shift (one-shot, like ctrl/alt on a
+            // typed character) but leaves ctrl/alt for the character still to come.
+            val emit: (String) -> Unit = { seq -> onBytes(seq); mods.shift = false }
+            KeyCap("esc") { emit(TtyKeys.ESC) }
+            KeyCap("tab") { emit(if (mods.shift) TtyKeys.BACK_TAB else TtyKeys.TAB) }
             KeyCap("ctrl", active = mods.ctrl) { mods.ctrl = !mods.ctrl }
             KeyCap("alt", active = mods.alt) { mods.alt = !mods.alt }
-            KeyCap("↑") { onBytes(TtyKeys.UP) }
-            KeyCap("↓") { onBytes(TtyKeys.DOWN) }
-            KeyCap("←") { onBytes(TtyKeys.LEFT) }
-            KeyCap("→") { onBytes(TtyKeys.RIGHT) }
+            KeyCap("shift", active = mods.shift) { mods.shift = !mods.shift }
+            KeyCap("↑") { emit(TtyKeys.shifted(TtyKeys.UP, mods.shift)) }
+            KeyCap("↓") { emit(TtyKeys.shifted(TtyKeys.DOWN, mods.shift)) }
+            KeyCap("←") { emit(TtyKeys.shifted(TtyKeys.LEFT, mods.shift)) }
+            KeyCap("→") { emit(TtyKeys.shifted(TtyKeys.RIGHT, mods.shift)) }
             KeyCap("^C") { onBytes(TtyKeys.CTRL_C); mods.clear() }
             KeyCap("^D") { onBytes(TtyKeys.CTRL_D); mods.clear() }
         }
@@ -230,7 +252,11 @@ private fun ModifierKeyRow(
 /** One keycap. The drawn cap fills a ≥ 44dp-tall hit area (heightIn before
  *  clickable, so the whole cap is tappable); 4dp rounding is intentional
  *  keyboard chrome. [description] doubles as contentDescription + click label
- *  for caps whose glyph isn't self-describing (e.g. 📎). */
+ *  for caps whose glyph isn't self-describing (e.g. 📎).
+ *
+ *  Every cap ticks: KEYBOARD_TAP is the same constant the soft keyboard uses, so
+ *  these keys feel like its keys — and it honours the system touch-feedback
+ *  setting, staying silent for users who turned haptics off. */
 @Composable
 private fun KeyCap(
     label: String,
@@ -238,12 +264,16 @@ private fun KeyCap(
     description: String? = null,
     onClick: () -> Unit,
 ) {
+    val view = LocalView.current
     Box(
         modifier = Modifier
             .heightIn(min = 44.dp)
             .clip(RoundedCornerShape(4.dp))
             .background(if (active) accent else bgSecondary)
-            .clickable(role = Role.Button, onClickLabel = description) { onClick() }
+            .clickable(role = Role.Button, onClickLabel = description) {
+                view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                onClick()
+            }
             .then(
                 if (description != null) {
                     Modifier.semantics { contentDescription = description }
@@ -344,12 +374,12 @@ private fun TtyInputCapture(
                     sent = ""
                     field = baseField()
                 }
-                // Sticky Ctrl/Alt armed + buffer growth → chord the appended
+                // Sticky Ctrl/Alt/Shift armed + buffer growth → chord the appended
                 // character(s) best-effort and keep them OUT of the buffer. The
                 // chord goes out on the epoch-bumping path so the buffer resets
                 // and the mirror resyncs (pi's line just changed under us).
-                (mods.ctrl || mods.alt) && cur.length > prev.length -> {
-                    onChordBytes(TtyKeys.encode(cur.takeLast(cur.length - prev.length), mods.ctrl, mods.alt))
+                (mods.ctrl || mods.alt || mods.shift) && cur.length > prev.length -> {
+                    onChordBytes(TtyKeys.encode(cur.takeLast(cur.length - prev.length), mods.ctrl, mods.alt, mods.shift))
                     sent = ""
                     field = baseField()
                 }

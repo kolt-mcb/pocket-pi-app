@@ -36,6 +36,32 @@ class TtyKeysTest {
         assertEquals("", TtyKeys.encode("", ctrl = true, alt = true))
     }
 
+    @Test fun shift_uppercases_the_first_char_only() {
+        assertEquals("Abc", TtyKeys.encode("abc", ctrl = false, alt = false, shift = true))
+    }
+
+    @Test fun shift_with_ctrl_is_the_same_control_byte() {
+        // Ctrl already folds case, so shift changes nothing for a chord.
+        assertEquals("\u0003", TtyKeys.encode("c", ctrl = true, alt = false, shift = true))
+    }
+
+    @Test fun shift_with_alt_uppercases_after_the_escape() {
+        assertEquals("\u001bX", TtyKeys.encode("x", ctrl = false, alt = true, shift = true))
+    }
+
+    @Test fun shifted_cursor_keys_get_the_xterm_modifier() {
+        assertEquals("\u001b[1;2A", TtyKeys.shifted(TtyKeys.UP, shift = true))
+        assertEquals("\u001b[1;2B", TtyKeys.shifted(TtyKeys.DOWN, shift = true))
+        assertEquals("\u001b[1;2C", TtyKeys.shifted(TtyKeys.RIGHT, shift = true))
+        assertEquals("\u001b[1;2D", TtyKeys.shifted(TtyKeys.LEFT, shift = true))
+    }
+
+    @Test fun unshifted_and_non_cursor_sequences_pass_through() {
+        assertEquals(TtyKeys.UP, TtyKeys.shifted(TtyKeys.UP, shift = false))
+        assertEquals(TtyKeys.ESC, TtyKeys.shifted(TtyKeys.ESC, shift = true))
+        assertEquals(TtyKeys.BACK_TAB, TtyKeys.shifted(TtyKeys.BACK_TAB, shift = true))
+    }
+
     @Test fun key_constants_are_the_expected_sequences() {
         assertEquals("\u001b", TtyKeys.ESC)
         assertEquals("\u001b[A", TtyKeys.UP)
@@ -45,5 +71,6 @@ class TtyKeysTest {
         assertEquals("\u0003", TtyKeys.CTRL_C)
         assertEquals("\u0004", TtyKeys.CTRL_D)
         assertEquals("\u007f", TtyKeys.DEL)
+        assertEquals("\u001b[Z", TtyKeys.BACK_TAB)
     }
 }
