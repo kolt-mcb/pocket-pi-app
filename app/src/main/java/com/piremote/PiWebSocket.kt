@@ -35,6 +35,21 @@ class PiWebSocket : WebSocketListener() {
     private var pendingUrl: String = ""
     private var retryCount = 0
 
+    // ── Background/battery policy state (driven by ConnectionPolicy) ──────
+    // Idle release: the app went to the background with nothing in flight, so
+    // we closed the socket to stop the 15s keepalive ping. `pendingUrl` is
+    // deliberately kept — resumeFromIdle() brings the link straight back
+    // without going through a full ChatViewModel.connect() (DB reload, fresh
+    // collectors), which is what makes the return feel like it never dropped.
+    @Volatile private var idleSuspended = false
+    val isIdleSuspended: Boolean get() = idleSuspended
+
+    // Last known connectivity, from ConnectivityManager. Retrying into a radio
+    // we know is down is pure battery burn *and* it silently eats the retry
+    // budget, which is how the app used to end up permanently Error'd after a
+    // walk out of Wi-Fi range.
+    @Volatile private var networkUp = true
+
     /** Build an OkHttpClient suited to the URL: a plain client for `ws://`, or
      *  a TLS client with **fingerprint-pinned** trust for `wss://?...&fp=<sha256>`.
      *  Pinning by SHA-256 means we accept any cert whose DER hashes to the
@@ -270,6 +285,7 @@ class PiWebSocket : WebSocketListener() {
     fun connect(url: String) {
         pendingUrl = url
         retryCount = 0
+        idleSuspended = false
         doConnect(url)
     }
     private fun doConnect(url: String) {
@@ -303,11 +319,75 @@ class PiWebSocket : WebSocketListener() {
     fun disconnect() {
         pendingUrl = ""
         retryCount = 0
+        idleSuspended = false
         reconnectJob?.cancel()
         reconnectJob = null
         sock?.close(1000, null)
         // NOTE: do NOT cancel `scope` — it hosts the stateIn sharing coroutines
         // for the UI-facing flows, and this object is reused across reconnects.
+    }
+
+    // ── Background lifecycle ─────────────────────────────────────────────
+    // These four are the only entry points ConnectionPolicy needs. They're all
+    // idempotent and safe to call from any thread.
+
+    /**
+     * Release the socket because the app is backgrounded and idle. Keeps
+     * [pendingUrl] so [resumeFromIdle] can restore it. `sock` is nulled *before*
+     * the close so the resulting onClosed/onFailure callback fails its
+     * `ws !== sock` identity check and can't schedule an auto-reconnect — the
+     * whole point is to stop talking to the network until we're foreground again.
+     */
+    fun suspendForIdle() {
+        if (idleSuspended || pendingUrl.isBlank()) return
+        idleSuspended = true
+        reconnectJob?.cancel()
+        reconnectJob = null
+        val s = sock
+        sock = null
+        s?.close(1000, "idle")
+        _s.value = ConnectionStatus.Disconnected
+    }
+
+    /** Bring back a link released by [suspendForIdle]. No-op otherwise. */
+    fun resumeFromIdle() {
+        if (!idleSuspended) return
+        idleSuspended = false
+        retryNow()
+    }
+
+    /**
+     * Try again right now, with a fresh retry budget. Called when something
+     * changed that makes a retry newly worth it (app came to the foreground, a
+     * network appeared) rather than "the last attempt failed" — so resetting
+     * [retryCount] here is correct, not a way to loop forever.
+     */
+    fun retryNow() {
+        if (idleSuspended || pendingUrl.isBlank() || !networkUp) return
+        val st = _s.value
+        if (st == ConnectionStatus.Connected || st == ConnectionStatus.Connecting) return
+        retryCount = 0
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch { reconnect() }
+    }
+
+    /** Connectivity changed. Down: stop retrying. Up: retry immediately. */
+    fun setNetworkAvailable(up: Boolean) {
+        val was = networkUp
+        networkUp = up
+        if (!up) {
+            reconnectJob?.cancel()
+            reconnectJob = null
+            return
+        }
+        if (was) return   // already up; nothing new happened
+        // Small settle delay: onAvailable fires before routes/DHCP are
+        // necessarily usable, and an instant attempt tends to fail and burn a retry.
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            delay(400)
+            retryNow()
+        }
     }
 
     // Push a transient notify banner (max 5 kept, auto-expires). Used for host
@@ -542,6 +622,14 @@ class PiWebSocket : WebSocketListener() {
         // backoff 2s, 4s, 8s, 16s, capped at 32s. Runs on `scope` so it's
         // cancellable and consistent with the rest of the class rather than
         // spawning a raw thread per retry.
+        if (!networkUp && pendingUrl.isNotBlank()) {
+            // No network to retry into. Park in Disconnected (NOT Error) so both
+            // setNetworkAvailable(true) and the foreground resume path treat this
+            // as recoverable; setNetworkAvailable will kick a fresh attempt the
+            // moment connectivity comes back.
+            _s.value = ConnectionStatus.Disconnected
+            return
+        }
         if (retryCount < 10 && pendingUrl.isNotBlank()) {
             retryCount++
             // Reflect the link is down while we back off, instead of leaving the

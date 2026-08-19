@@ -37,6 +37,7 @@ class PiService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        running = true
         val serverHost = intent?.getStringExtra(EXTRA_HOST) ?: "Pi"
         val busy = intent?.getBooleanExtra(EXTRA_BUSY, false) == true
         val msgCount = intent?.getIntExtra(EXTRA_MSG_COUNT, 0) ?: 0
@@ -61,6 +62,7 @@ class PiService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        running = false
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
@@ -114,6 +116,12 @@ class PiService : Service() {
         // startForeground throws → stopSelf → repeat, burning CPU.
         @Volatile private var quotaFailed = false
 
+        // Whether the service is currently up. Android 12+ forbids *starting* a
+        // foreground service from the background, but plain startService() to an
+        // already-running one is fine — so notification updates that land after
+        // the app is backgrounded use that path instead.
+        @Volatile private var running = false
+
         /** Start or update the foreground service. */
         fun start(context: Context, serverHost: String, busy: Boolean = false, msgCount: Int = 0) {
             if (quotaFailed) return  // don't retry after quota exhaustion
@@ -123,15 +131,20 @@ class PiService : Service() {
                 putExtra(EXTRA_MSG_COUNT, msgCount)
             }
             try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !running) {
                     context.startForegroundService(intent)
                 } else {
                     context.startService(intent)
                 }
             } catch (e: Exception) {
-                // startForegroundService itself can fail (e.g. missing permission)
+                // A caller-side denial (most likely ForegroundServiceStartNotAllowed
+                // — we raced the app going to the background) is transient, so this
+                // deliberately does NOT latch quotaFailed: the next foreground
+                // transition should get to try again. Only startForeground()
+                // throwing inside onStartCommand means the quota is actually gone,
+                // and that latches via markQuotaFailed(). Callers here are
+                // transition-driven, not a retry loop, so there's nothing to spin.
                 Log.w("PiService", "start denied: ${e.message}")
-                quotaFailed = true
             }
         }
 
@@ -142,6 +155,7 @@ class PiService : Service() {
          *  connect cycle gets a fresh try (the 24h quota window may have moved). */
         fun stop(context: Context) {
             quotaFailed = false
+            running = false
             context.stopService(Intent(context, PiService::class.java))
         }
 

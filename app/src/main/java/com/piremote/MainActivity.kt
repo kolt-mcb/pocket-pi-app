@@ -172,9 +172,19 @@ class MainActivity : ComponentActivity() {
                     val observer = LifecycleEventObserver { _, event ->
                         when (event) {
                             Lifecycle.Event.ON_RESUME -> {
-                                if (status == ConnectionStatus.Disconnected && url.isNotEmpty()) {
-                                    vm.connect()
-                                }
+                                // Fallback for a hard-failed link. ConnectionPolicy already
+                                // handled the common cases on ON_START (resume an idle
+                                // release, retry a live-but-down socket), and both leave
+                                // status at Connecting — so this only fires when there is no
+                                // attempt in flight at all.
+                                //
+                                // `Error` has to be in here: exhausting the retry budget
+                                // (walk out of Wi-Fi range) lands there, and the old
+                                // `== Disconnected` check meant the app stayed stuck on the
+                                // error until the user reconnected by hand.
+                                val live = status == ConnectionStatus.Connected ||
+                                    status == ConnectionStatus.Connecting
+                                if (!live && url.isNotEmpty()) vm.connect()
                             }
                             // DO NOT disconnect on ON_STOP — foreground service owns the connection.
                             else -> {}

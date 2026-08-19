@@ -23,10 +23,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.sample
 import com.piremote.db.ChatDatabase
 import com.piremote.db.ChatMessageEntity
 
@@ -227,7 +223,6 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
         } catch (_: Throwable) {}
     }
 
-    @OptIn(kotlinx.coroutines.FlowPreview::class) // Flow.sample, for FGS-update throttling
     fun connect() {
         val u = _url.value.trim()
         if (u.isBlank()) return   // don't open a socket to "" or pollute URL history
@@ -319,34 +314,12 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
                 }
             }
         }
-        // Foreground service: start on connect, update on busy/message changes, stop on disconnect.
-        // collectLatest auto-cancels the inner combine() when status leaves Connected, so the
-        // FGS-updater coroutine doesn't leak across status transitions.
-        scope.launch {
-            val host = extractHost(u)
-            _ws.statusFlow.collectLatest { st ->
-                when (st) {
-                    is ConnectionStatus.Connected -> {
-                        try { PiService.start(_ctx, host) } catch (_: Exception) {}
-                        // messageFlow re-emits on every streamed token (each delta publishes a
-                        // new list instance), and each collect here is a startForegroundService
-                        // binder round-trip. distinctUntilChanged drops the per-token no-ops
-                        // (size/busy unchanged); sample caps notification churn at 1/s, which
-                        // is also Android's own notification rate-limit territory.
-                        combine(_ws.busyFlow, _ws.messageFlow) { busy, msgs -> busy to msgs.size }
-                            .distinctUntilChanged()
-                            .sample(1_000)
-                            .collect { (busy, count) ->
-                                try { PiService.start(_ctx, host, busy, count) } catch (_: Exception) {}
-                            }
-                    }
-                    is ConnectionStatus.Disconnected, is ConnectionStatus.Error -> {
-                        try { PiService.stop(_ctx) } catch (_: Exception) {}
-                    }
-                    else -> {}
-                }
-            }
-        }
+        // Background/battery policy — foreground service lifetime, idle release,
+        // and network-driven reconnect all live in ConnectionPolicy so there's a
+        // single owner of "should we be connected right now?". Runs on
+        // connectionScope, so it survives an idle release (which does NOT
+        // disconnect) and is torn down only by disconnect()/onCleared().
+        ConnectionPolicy(_ctx, _ws, extractHost(u)).run(scope)
         // "Pi is ready" notification — only fires when the app is backgrounded
         // so the foreground chat doesn't ping over its own view. Foreground
         // state read off ProcessLifecycleOwner at emit time, not subscribed,
@@ -372,6 +345,9 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
         // FGS updater) so reconnects don't stack new ones on top.
         connectionScope?.cancel()
         connectionScope = null
+        // Cancelling the scope kills ConnectionPolicy, so nothing is left to
+        // stop the service — do it here explicitly.
+        try { PiService.stop(_ctx) } catch (_: Exception) {}
         // Keep the persisted chat — connect() rebuilds it via _ws.repoMessages
         // when the user reconnects to the same URL.
         _ws.disconnect()
