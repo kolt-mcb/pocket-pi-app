@@ -62,8 +62,13 @@ The host replies with a keyframe and then a stream of frames/diffs at up to
   row `i` with `t`, then truncate/extend to `lineCount` rows. `seq` gaps mean
   a dropped frame — the host resends a keyframe when it must resync (e.g.
   width change, subscribe, backpressure skip).
-- The app keeps one buffer per agentId (capped at 100 000 rows) and renders
-  only the newest frame.
+- The app keeps one buffer per agentId and renders only the newest frame. It
+  retains only the **last ~4 000 rows** (`MIRROR_KEEP_LINES`): the host owns
+  the full scrollback, and holding a long conversation's worth of ANSI rows
+  on the phone costs tens of MB. Diff indices are absolute in the host's
+  buffer, so the app translates them by the number of head rows it has
+  trimmed; rows below that window are ignored. A hostile `lineCount` is
+  still hard-capped at 100 000.
 
 Input goes back as raw bytes:
 `{"type":"mirror_input","data":"…","agentId":<optional>}` — one keystroke or

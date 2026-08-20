@@ -91,6 +91,84 @@ private fun linkSpansForLine(segments: List<Pair<String, AnsiStyle>>): List<Link
     return spans
 }
 
+/** A mirror row rendered for display: the parsed item plus, for text rows, the
+ *  styled string handed to [Text]. [styled] is null for image rows. */
+private class RenderedLine(val item: MirrorItem, val styled: AnnotatedString?)
+
+/**
+ * LRU cache of rendered rows, keyed by the row's raw ANSI text.
+ *
+ * Keyed by CONTENT, not by row index: the mirror buffer scrolls, so the same
+ * text lands at a different index from one frame to the next. An index-keyed
+ * `remember` misses on every one of those rows and re-runs the ANSI parse, the
+ * bare-URL regex and the AnnotatedString build for the whole viewport, every
+ * frame. Keyed by content it hits instead, and returns the identical
+ * AnnotatedString instance so [Text] itself skips too.
+ *
+ * Keys are the very String instances the mirror buffer holds, so a cached entry
+ * costs no extra string memory until that row scrolls out of the buffer.
+ *
+ * Touched only from composition (main thread), so it needs no synchronization.
+ */
+private object LineCache {
+    /** Total LRU budget, in weight units (one ordinary text row = 1). */
+    private const val MAX_WEIGHT = 1024
+    /** A row longer than this is an inline-image escape sequence, not text. */
+    private const val BIG_ROW_CHARS = 8 * 1024
+    /**
+     * What one image row costs against [MAX_WEIGHT]. Weighted rather than
+     * measured in characters: an image row is megabytes, so a plain byte budget
+     * would let a single one evict the entire cache and then thrash — miss,
+     * re-parse the multi-MB sequence, evict everything, repeat, once per frame.
+     * A fixed weight caps big rows at ~8 while leaving room for the text ones.
+     */
+    private const val BIG_ROW_WEIGHT = 128
+
+    private var weight = 0
+    private var accentKey: Color? = null
+    private val map = LinkedHashMap<String, RenderedLine>(256, 0.75f, /* accessOrder = */ true)
+
+    private fun weigh(raw: String) = if (raw.length > BIG_ROW_CHARS) BIG_ROW_WEIGHT else 1
+
+    fun get(raw: String, accent: Color): RenderedLine {
+        // Link styling bakes the accent colour in, so a palette switch (remote
+        // theme_info) invalidates everything.
+        if (accentKey != accent) { map.clear(); weight = 0; accentKey = accent }
+        map[raw]?.let { return it }
+        val rendered = render(raw, accent)
+        map[raw] = rendered
+        weight += weigh(raw)
+        if (weight > MAX_WEIGHT) {
+            // accessOrder = true, so the iterator starts at the least recently
+            // used. Never evict the entry we just inserted (it sorts last).
+            val it = map.entries.iterator()
+            while (weight > MAX_WEIGHT && map.size > 1 && it.hasNext()) {
+                weight -= weigh(it.next().key)
+                it.remove()
+            }
+        }
+        return rendered
+    }
+
+    private fun render(raw: String, accent: Color): RenderedLine {
+        val item = parseMirrorLine(raw)
+        if (item !is MirrorItem.Line) return RenderedLine(item, null)
+        val segs = item.segments
+        // Base ANSI styling, then overlay accent + underline on any link runs
+        // (OSC 8 or detected URLs) so they look tappable.
+        val base = buildAnsiText(segs)
+        val links = linkSpansForLine(segs)
+        val styled = if (links.isEmpty()) base else buildAnnotatedString {
+            append(base)
+            for (s in links) addStyle(
+                SpanStyle(color = accent, textDecoration = TextDecoration.Underline),
+                s.start, s.end.coerceAtMost(base.length),
+            )
+        }
+        return RenderedLine(item, styled)
+    }
+}
+
 /**
  * Two-finger pinch → terminal text size, without stealing one-finger scrolling
  * or taps. Events are watched on the Initial pass so a pinch claims them before
@@ -221,7 +299,17 @@ fun MirrorSurface(
         snapshotFlow { currentFrame.seq }.collect {
             val f = currentFrame
             if (followBottom && f.lines.isNotEmpty() && !listState.isScrollInProgress) {
-                listState.scrollToItem(f.lines.size - 1)
+                // Skip the scroll when the tail is already fully on screen —
+                // scrollToItem forces an extra synchronous measure/layout pass,
+                // and most frames only repaint rows that are already visible.
+                // Compare against the frame's own row count, not layoutInfo's:
+                // after new rows arrive totalItemsCount is a measure behind.
+                val info = listState.layoutInfo
+                val last = info.visibleItemsInfo.lastOrNull()
+                val atBottom = last != null &&
+                    last.index >= f.lines.size - 1 &&
+                    last.offset + last.size <= info.viewportEndOffset
+                if (!atBottom) listState.scrollToItem(f.lines.size - 1)
             }
         }
     }
@@ -258,7 +346,10 @@ fun MirrorSurface(
                             down.position.y >= it.offset && down.position.y < it.offset + it.size
                         }
                         val lineIdx = hit?.index ?: listState.firstVisibleItemIndex
-                        val tapped = f.lines.getOrNull(lineIdx)?.let { parseMirrorLine(it) }
+                        // Through the cache: this runs on the main thread, and a
+                        // tap on an inline-image row would otherwise re-parse a
+                        // multi-megabyte escape sequence.
+                        val tapped = f.lines.getOrNull(lineIdx)?.let { LineCache.get(it, accent).item }
                         if (tapped is MirrorItem.Img) {
                             // Tap on an inline image → open the viewer (zoom + save),
                             // don't forward it as a terminal click.
@@ -291,34 +382,22 @@ fun MirrorSurface(
                 }
             },
         ) {
-            // Per-line memoization: parsing only runs for a row whose raw text
-            // changed; a row carrying an inline image (kitty/OSC 1337) renders as
-            // an image, the rest is text.
-            // Keyed by index, not line content: the buffer is padded with blank
-            // rows (MirrorDiff), so content keys are not unique and LazyColumn
-            // throws on duplicates. Row identity is positional here anyway.
+            // Rendering is memoized by row CONTENT in LineCache, so a row that
+            // merely scrolled to a new index is a cache hit; a row carrying an
+            // inline image (kitty/OSC 1337) renders as an image, the rest is text.
+            // The LazyColumn key stays the index, not the content: the buffer is
+            // padded with blank rows (MirrorDiff), so content keys are not unique
+            // and LazyColumn throws on duplicates. Row identity is positional here.
+            // frame.lines is a snapshot list mutated in place, so reading it here
+            // invalidates only the rows the last diff actually touched.
             items(frame.lines.size, key = { it }) { idx ->
                 val raw = frame.lines[idx]
-                val item = remember(raw) { parseMirrorLine(raw) }
-                when (item) {
+                val rendered = LineCache.get(raw, accent)
+                when (val item = rendered.item) {
                     is MirrorItem.Line -> {
                         val segs = item.segments
-                        // Base ANSI styling, then overlay accent + underline on any
-                        // link runs (OSC 8 or detected URLs) so they look tappable.
-                        val styled = remember(raw) {
-                            val base = buildAnsiText(segs)
-                            val links = linkSpansForLine(segs)
-                            if (links.isEmpty()) base
-                            else buildAnnotatedString {
-                                append(base)
-                                for (s in links) addStyle(
-                                    SpanStyle(color = accent, textDecoration = TextDecoration.Underline),
-                                    s.start, s.end.coerceAtMost(base.length),
-                                )
-                            }
-                        }
                         Text(
-                            text = styled,
+                            text = rendered.styled ?: AnnotatedString(""),
                             style = lineStyle,
                             softWrap = false,
                             maxLines = 1,

@@ -1,5 +1,8 @@
 package com.piremote
 
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -235,10 +238,20 @@ class PiWebSocket : WebSocketListener() {
     val mirrorFrameFlow: StateFlow<MirrorFrame?> get() = _mirrorFrame
     // Reconstructed mirror line buffer, for applying row-level diffs (mirror_diff).
     // The host sends a full mirror_frame keyframe on subscribe, then diffs against
-    // exactly what it last sent us, so this stays in sync. Touched only on the
-    // single OkHttp reader thread (dispatch), so no synchronization needed.
-    private var mirrorBuf: MutableList<String> = mutableListOf()
+    // exactly what it last sent us, so this stays in sync. Written only on the
+    // single OkHttp reader thread (dispatch); read by composition on the main
+    // thread, which is exactly what a snapshot list is for.
+    //
+    // It is a SnapshotStateList, not a plain list copied into each frame, because
+    // copying it per frame was O(buffer) work — and an O(buffer) allocation — on
+    // every diff, so the mirror got slower the longer the conversation ran. Rows
+    // are mutated in place inside one snapshot, so Compose invalidates only the
+    // rows that actually changed and never observes a half-applied diff.
+    private val mirrorBuf: SnapshotStateList<String> = mutableStateListOf()
     private var mirrorBufAgent: String = ""
+    // How many head rows of the host's buffer we've trimmed away locally (see
+    // MIRROR_KEEP_LINES). Host row `i` lives at `mirrorBuf[i - mirrorDropped]`.
+    private var mirrorDropped: Int = 0
     // PiPerf: nanoTime of the last keystroke sent to the host. On the next mirror
     // frame we log the gap (echo round-trip = network + host compose), then clear it.
     // Touched from the IME (send) and the reader thread (frame) — volatile is enough
@@ -804,13 +817,22 @@ class PiWebSocket : WebSocketListener() {
                 val lines = (j["lines"] as? List<*>)?.filterIsInstance<String>() ?: emptyList()
                 val cur = j["cursor"] as? Map<*, *>
                 val agentId = Js.gets(j, "agentId") ?: ""
-                mirrorBuf = lines.toMutableList()
+                // Keep only the tail: the host owns the full scrollback, and a
+                // long conversation's worth of ANSI rows is tens of MB here.
+                val kept = if (lines.size > com.piremote.tty.MIRROR_KEEP_LINES)
+                    lines.subList(lines.size - com.piremote.tty.MIRROR_KEEP_LINES, lines.size)
+                else lines
+                Snapshot.withMutableSnapshot {
+                    mirrorBuf.clear()
+                    mirrorBuf.addAll(kept)
+                }
+                mirrorDropped = lines.size - kept.size
                 mirrorBufAgent = agentId
                 logEchoRtt(lines.size, lines.size)
                 _mirrorFrame.value = MirrorFrame(
                     seq = (j["seq"] as? Number)?.toInt() ?: 0,
                     agentId = agentId,
-                    lines = lines,
+                    lines = mirrorBuf,
                     cursorRow = (cur?.get("row") as? Number)?.toInt() ?: -1,
                     cursorCol = (cur?.get("col") as? Number)?.toInt() ?: -1,
                     width = (j["width"] as? Number)?.toInt() ?: 80,
@@ -830,13 +852,22 @@ class PiWebSocket : WebSocketListener() {
                         val i = (m["i"] as? Number)?.toInt() ?: return@mapNotNull null
                         i to (m["t"] as? String ?: "")
                     } ?: emptyList()
-                    com.piremote.tty.applyMirrorDiff(mirrorBuf, lineCount, rows)
+                    // One snapshot for the whole diff: composition on the main
+                    // thread sees the frame whole or not at all, and only the
+                    // rows that actually changed are invalidated.
+                    Snapshot.withMutableSnapshot {
+                        mirrorDropped = com.piremote.tty.applyMirrorDiff(
+                            mirrorBuf, lineCount, rows,
+                            dropped = mirrorDropped,
+                            keep = com.piremote.tty.MIRROR_KEEP_LINES,
+                        )
+                    }
                     val cur = j["cursor"] as? Map<*, *>
-                    logEchoRtt(mirrorBuf.size, rows.size)
+                    logEchoRtt(lineCount, rows.size)   // host row count, not our trimmed window
                     _mirrorFrame.value = MirrorFrame(
                         seq = (j["seq"] as? Number)?.toInt() ?: 0,
                         agentId = agentId,
-                        lines = mirrorBuf.toList(),
+                        lines = mirrorBuf,
                         cursorRow = (cur?.get("row") as? Number)?.toInt() ?: -1,
                         cursorCol = (cur?.get("col") as? Number)?.toInt() ?: -1,
                         width = (j["width"] as? Number)?.toInt() ?: 80,
@@ -1713,7 +1744,12 @@ data class BannerMessage(
 data class MirrorFrame(
     val seq: Int,
     val agentId: String,         // which agent's screen this is
-    val lines: List<String>,     // full composed buffer, ANSI-styled
+    // The retained tail of the host's composed buffer, ANSI-styled, one entry per
+    // row. This is the SnapshotStateList PiWebSocket mutates in place — the SAME
+    // instance in every frame, never a per-frame copy. Read it from composition
+    // and Compose invalidates only the rows that changed; do not hold it as a
+    // plain snapshot, and never mutate it outside the reader thread.
+    val lines: List<String>,
     val cursorRow: Int,          // -1 when no cursor
     val cursorCol: Int,
     val width: Int,              // host terminal columns
