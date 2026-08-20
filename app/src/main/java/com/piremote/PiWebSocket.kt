@@ -593,6 +593,33 @@ class PiWebSocket : WebSocketListener() {
     /** PiPerf: log keystroke→frame latency (network + host compose) and clear the
      *  clock. [changed] is the number of rows this frame touched (full size for a
      *  keyframe, diff row count for a diff) — a heavy frame is its own signal. */
+    // ── PiMsgStats: per-type message census ────────────────────────────
+    // Answers "25 messages/s arrive but the mirror only changes ~4 times/s —
+    // where does the rest go?". Splits the inbound stream by `type`, and for
+    // mirror diffs reports how many rows landed below the retained window
+    // (MIRROR_KEEP_LINES) and how many diffs therefore changed nothing at all.
+    // A non-zero noopDiffs means head-trimming is discarding real updates.
+    //   adb shell setprop log.tag.PiMsgStats DEBUG
+    // Reader-thread only, like the other counters here — no synchronization.
+    private val msgCounts = HashMap<String, Int>()
+    private var msgStatsAt = 0L
+    private var diffRowsSeen = 0
+    private var diffRowsBelowWindow = 0
+    private var diffsChangedNothing = 0
+
+    private fun accountMsg(type: String) {
+        if (!Log.isLoggable("PiMsgStats", Log.DEBUG)) return
+        msgCounts[type] = (msgCounts[type] ?: 0) + 1
+        val now = System.currentTimeMillis()
+        if (msgStatsAt == 0L) { msgStatsAt = now; return }
+        if (now - msgStatsAt < 1000) return
+        val census = msgCounts.entries.sortedByDescending { it.value }
+            .joinToString(" ") { "${it.key}=${it.value}" }
+        Log.d("PiMsgStats", "$census | diffRows=$diffRowsSeen below=$diffRowsBelowWindow noopDiffs=$diffsChangedNothing")
+        msgCounts.clear(); diffRowsSeen = 0; diffRowsBelowWindow = 0; diffsChangedNothing = 0
+        msgStatsAt = now
+    }
+
     private fun logEchoRtt(lineCount: Int, changed: Int) {
         val t = lastInputSentNanos
         if (t == 0L) return
@@ -728,6 +755,7 @@ class PiWebSocket : WebSocketListener() {
     private fun dispatch(raw: String) {
         val j = JP.p(raw) ?: return
         val tp = Js.gets(j, "type") ?: return
+        accountMsg(tp)
 
         // Per-agent events: route to the right AgentState by event.agentId.
         // Extension stamps agentId on every agent_*/message_*/tool_*/turn_*
@@ -852,6 +880,14 @@ class PiWebSocket : WebSocketListener() {
                         val i = (m["i"] as? Number)?.toInt() ?: return@mapNotNull null
                         i to (m["t"] as? String ?: "")
                     } ?: emptyList()
+                    if (Log.isLoggable("PiMsgStats", Log.DEBUG)) {
+                        // Counted against the PRE-apply dropped count — the call
+                        // below advances it.
+                        val below = rows.count { it.first < mirrorDropped }
+                        diffRowsSeen += rows.size
+                        diffRowsBelowWindow += below
+                        if (rows.isNotEmpty() && below == rows.size) diffsChangedNothing++
+                    }
                     // One snapshot for the whole diff: composition on the main
                     // thread sees the frame whole or not at all, and only the
                     // rows that actually changed are invalidated.
